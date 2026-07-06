@@ -1,0 +1,42 @@
+services:
+  doc-graph:
+    build: .
+    container_name: doc-graph
+    restart: unless-stopped
+    ports:
+      - "3457:3457"   # MCP (streamable HTTP)
+      - "3458:3458"   # Graph-Viewer (statisches HTML)
+    environment:
+      # --- LLM: geteiltes mistral auf paperless-ollama. ZWINGEND dasselbe Modell
+      # wie paperless-ai: 16 GB VRAM fassen kein zweites großes Modell neben dem
+      # gepinnten mistral (KEEP_ALIVE=-1) -> qwen3:14b daneben => OOM (Exit 137),
+      # empirisch bestätigt. Antworten liefert ohnehin Claude via only_context. ---
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://paperless-ollama:11434}
+      LLM_MODEL: ${LLM_MODEL:-mistral-small3.2:24b}
+      LLM_NUM_CTX: ${LLM_NUM_CTX:-32768}   # konsistent mit paperless-ai/ai-rem
+      # --- Embeddings (bge-m3, wird ohnehin schon geteilt) ---
+      EMBED_MODEL: ${EMBED_MODEL:-bge-m3}
+      EMBED_DIM: ${EMBED_DIM:-1024}
+      # --- Paperless-NGX (Dokumentquelle): via LAN-DNS 'paperless' erreichbar ---
+      PAPERLESS_URL: ${PAPERLESS_URL:-https://paperless/}
+      PAPERLESS_TOKEN: ${PAPERLESS_TOKEN}
+      # --- Server ---
+      MCP_PORT: "3457"
+      VIEWER_PORT: "3458"
+      PUBLIC_HOST: ${PUBLIC_HOST:-myubuntu}   # Host für die Viewer-URL im Browser
+      PROJECTS_DIR: /data/projects
+      MAX_ASYNC: ${MAX_ASYNC:-2}
+    volumes:
+      # Persistente KG-Stores, ein Unterordner pro Projekt
+      - ./data/projects:/data/projects
+      # Optional für ingest_directory: lokales Dokumentverzeichnis read-only.
+      # Pfad an myubuntu anpassen und einkommentieren; primäre Quelle ist Paperless.
+      # - /home/markus/dokumente:/data/inputs:ro
+    networks:
+      # Selbes Netz wie paperless-ollama + paperless-ai: löst 'paperless-ollama'
+      # (Ollama) und 'paperless' (NGX via LAN-DNS) auf — wie paperless-ai.
+      - paperless-ai_default
+
+networks:
+  paperless-ai_default:
+    external: true

@@ -1,0 +1,6 @@
+# LightRAG als Library (nicht [api] – wir brauchen den HTTP-Server nicht)
+lightrag-hku>=1.4.9
+# MCP Python SDK mit FastMCP (streamable HTTP)
+mcp>=1.9.0
+httpx>=0.27
+aiofiles
