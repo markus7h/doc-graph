@@ -344,8 +344,8 @@ async def get_entity(project: str, entity_name: str) -> str:
 @mcp.tool()
 async def graph_view(project: str) -> str:
     """Erzeugt eine interaktive HTML-Ansicht des Knowledge Graphs zum Durchklicken
-    (Knoten = Entitäten, gefärbt nach Typ; Kanten = Beziehungen mit Beschreibung
-    im Tooltip). Gibt die URL zurück, die im Browser zu öffnen ist.
+    (Knoten = Entitäten, gefärbt nach Typ; Kanten = Beziehungen). Details erscheinen
+    per Klick in einem Panel am unteren Rand. Gibt die URL zurück, die im Browser zu öffnen ist.
 
     Args:
         project: Projektname (siehe list_projects).
@@ -366,11 +366,11 @@ async def graph_view(project: str) -> str:
         nodes.append({
             "id": n, "label": str(n).strip('"'), "group": etype,
             "color": color_for(etype),
-            "title": (f"[{etype}] " if etype else "") + desc[:400],
+            "desc": desc[:400],
         })
     for u, v, d in G.edges(data=True):
         tip = d.get("description") or d.get("keywords") or ""
-        edges.append({"from": u, "to": v, "title": str(tip)[:400]})
+        edges.append({"from": u, "to": v, "desc": str(tip)[:400]})
 
     out = working_dir / "graph.html"
     out.write_text(graph_html(nodes, edges, f"KG: {project}"), encoding="utf-8")

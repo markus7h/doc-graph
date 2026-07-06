@@ -68,8 +68,9 @@ danach von allen Clients gleichermaßen nutzbar.
 ## Graph-Viewer
 
 `graph_view(project)` rendert den Graphen als interaktive HTML-Ansicht
-(vis-network): Knoten = Entitäten (gefärbt nach Typ), Kanten = Beziehungen mit
-Beschreibung im Tooltip. Das Tool gibt die URL zurück:
+(vis-network): Knoten = Entitäten (gefärbt nach Typ), Kanten = Beziehungen.
+Details (Beschreibung) erscheinen per Klick auf Knoten/Kante in einem
+mehrzeiligen Panel am unteren Rand. Das Tool gibt die URL zurück:
 
 ```
 http://myubuntu:5776/<projekt>/graph.html

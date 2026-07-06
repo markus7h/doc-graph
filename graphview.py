@@ -37,15 +37,47 @@ def graph_html(nodes: list[dict], edges: list[dict], title: str) -> str:
   #net{{width:100%;height:100vh}}
   #bar{{position:fixed;top:8px;left:8px;z-index:5;background:#fff;
        padding:6px 10px;border-radius:6px;box-shadow:0 1px 4px rgba(0,0,0,.2);font-size:13px}}
+  #info{{position:fixed;bottom:0;left:0;right:0;z-index:5;background:#fff;
+        max-height:35vh;overflow:auto;padding:10px 14px;font-size:13px;
+        box-shadow:0 -1px 6px rgba(0,0,0,.25);display:none}}
+  #info b{{font-size:14px}}
+  #info div{{white-space:pre-wrap;margin-top:6px}}
 </style></head><body>
-<div id="bar"><b>{title}</b> — ziehen zum Verschieben, scrollen zum Zoomen, Knoten anklicken</div>
+<div id="bar"><b>{title}</b> — ziehen zum Verschieben, scrollen zum Zoomen, Knoten/Kante anklicken für Details</div>
 <div id="net"></div>
+<div id="info"></div>
 <script>
   const data = {payload};
-  new vis.Network(document.getElementById("net"), data, {{
+  const nodesDS = new vis.DataSet(data.nodes);
+  const edgesDS = new vis.DataSet(data.edges);
+  const network = new vis.Network(document.getElementById("net"), {{nodes: nodesDS, edges: edgesDS}}, {{
     physics: {{ stabilization: true, barnesHut: {{ gravitationalConstant: -8000, springLength: 120 }} }},
     nodes: {{ shape: "dot", size: 14, font: {{ size: 14 }} }},
     edges: {{ smooth: {{ type: "continuous" }}, color: {{ opacity: 0.5 }}, arrows: "to" }},
-    interaction: {{ hover: true, tooltipDelay: 120 }}
+    interaction: {{ hover: true }}
+  }});
+
+  // ponytail: Klick statt Hover-Tooltip — Panel unten, mehrzeilig, textContent (kein innerHTML-Risiko)
+  const info = document.getElementById("info");
+  function showInfo(header, group, body) {{
+    info.innerHTML = "";
+    const h = document.createElement("b");
+    h.textContent = header + (group ? " [" + group + "]" : "");
+    const b = document.createElement("div");
+    b.textContent = body || "";
+    info.appendChild(h); info.appendChild(b);
+    info.style.display = "block";
+  }}
+  network.on("click", params => {{
+    if (params.nodes.length) {{
+      const n = nodesDS.get(params.nodes[0]);
+      showInfo(n.label, n.group, n.desc);
+    }} else if (params.edges.length) {{
+      const e = edgesDS.get(params.edges[0]);
+      const u = nodesDS.get(e.from), v = nodesDS.get(e.to);
+      showInfo((u ? u.label : e.from) + " → " + (v ? v.label : e.to), "", e.desc);
+    }} else {{
+      info.style.display = "none";
+    }}
   }});
 </script></body></html>"""
