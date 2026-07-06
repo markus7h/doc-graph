@@ -10,8 +10,8 @@ mitgelieferter Graph-Viewer macht den Graphen im Browser durchklickbar.
 ## Architektur
 
 ```
-Claude Code ──MCP (streamable HTTP :3457)──> doc-graph ──> Ollama (Extraktion + Embeddings)
-Browser     ──HTTP  (Graph-Viewer   :3458)──> doc-graph ──> Paperless-NGX API (Dokumentquelle)
+Claude Code ──MCP (streamable HTTP :5775)──> doc-graph ──> Ollama (Extraktion + Embeddings)
+Browser     ──HTTP  (Graph-Viewer   :5776)──> doc-graph ──> Paperless-NGX API (Dokumentquelle)
 
 doc-graph
 ├─ Projekt "fehmarn"   → /data/projects/fehmarn/
@@ -59,7 +59,7 @@ Namen wie paperless-ai. Bei abweichendem Setup den Netzwerk-Block in
 ## Claude Code anbinden
 
 ```bash
-claude mcp add --transport http doc-graph http://myubuntu:3457/mcp
+claude mcp add --transport http doc-graph http://myubuntu:5775/mcp
 ```
 
 Da die Konfiguration über `CLAUDE_CONFIG_DIR` zentral liegt, ist der Server
@@ -72,7 +72,7 @@ danach von allen Clients gleichermaßen nutzbar.
 Beschreibung im Tooltip. Das Tool gibt die URL zurück:
 
 ```
-http://myubuntu:3458/<projekt>/graph.html
+http://myubuntu:5776/<projekt>/graph.html
 ```
 
 Der Viewer ist ein stdlib-Fileserver (LAN-intern, kein Auth/HTTPS).

@@ -7,7 +7,7 @@ Dokumentquelle ist primär Paperless-NGX (bereits OCR-ter Text via REST-API),
 alternativ lokale Textdateien (ingest_directory).
 
 Transport: streamable HTTP -> Claude Code:
-  claude mcp add --transport http doc-graph http://myubuntu:3457/mcp
+  claude mcp add --transport http doc-graph http://myubuntu:5775/mcp
 """
 
 import asyncio
@@ -35,7 +35,7 @@ from lightrag.kg.shared_storage import initialize_pipeline_status
 # Konfiguration
 # ----------------------------------------------------------------------------
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-LLM_MODEL = os.environ.get("LLM_MODEL", "qwen3:14b")
+LLM_MODEL = os.environ.get("LLM_MODEL", "mistral-small3.2:24b")
 LLM_NUM_CTX = int(os.environ.get("LLM_NUM_CTX", "32768"))
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "bge-m3")
 EMBED_DIM = int(os.environ.get("EMBED_DIM", "1024"))
@@ -46,8 +46,8 @@ PAPERLESS_TOKEN = os.environ.get("PAPERLESS_TOKEN", "")
 
 PROJECTS_DIR = Path(os.environ.get("PROJECTS_DIR", "/data/projects"))
 INPUTS_DIR = Path("/data/inputs")
-MCP_PORT = int(os.environ.get("MCP_PORT", "3457"))
-VIEWER_PORT = int(os.environ.get("VIEWER_PORT", "3458"))
+MCP_PORT = int(os.environ.get("MCP_PORT", "5775"))
+VIEWER_PORT = int(os.environ.get("VIEWER_PORT", "5776"))
 # Hostname, unter dem der Viewer vom Browser erreichbar ist (für die zurückgegebene URL)
 PUBLIC_HOST = os.environ.get("PUBLIC_HOST", "localhost")
 

@@ -4,8 +4,8 @@ services:
     container_name: doc-graph
     restart: unless-stopped
     ports:
-      - "3457:3457"   # MCP (streamable HTTP)
-      - "3458:3458"   # Graph-Viewer (statisches HTML)
+      - "5775:5775"   # MCP (streamable HTTP)
+      - "5776:5776"   # Graph-Viewer (statisches HTML)
     environment:
       # --- LLM: geteiltes mistral auf paperless-ollama. ZWINGEND dasselbe Modell
       # wie paperless-ai: 16 GB VRAM fassen kein zweites großes Modell neben dem
@@ -21,8 +21,8 @@ services:
       PAPERLESS_URL: ${PAPERLESS_URL:-https://paperless/}
       PAPERLESS_TOKEN: ${PAPERLESS_TOKEN}
       # --- Server ---
-      MCP_PORT: "3457"
-      VIEWER_PORT: "3458"
+      MCP_PORT: "5775"
+      VIEWER_PORT: "5776"
       PUBLIC_HOST: ${PUBLIC_HOST:-myubuntu}   # Host für die Viewer-URL im Browser
       PROJECTS_DIR: /data/projects
       MAX_ASYNC: ${MAX_ASYNC:-2}

@@ -13,5 +13,5 @@ COPY server.py graphview.py .
 # Tiktoken-Cache vorab laden, damit der Container offline lauffähig ist
 RUN python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')" || true
 
-EXPOSE 3457 3458
+EXPOSE 5775 5776
 CMD ["python", "server.py"]
