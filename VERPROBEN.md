@@ -14,7 +14,7 @@ Teilungsversteigerungs-Fall ist der ideale Typ: Fristen, Chronologie,
 wer-schrieb-wann.
 
 ```
-ingest_paperless(project="fehmarn", tag="Teilungsversteigerung")
+ingest_paperless(project="doc-graph", tag="doc-graph")
 ```
 
 ### 2. 5–8 Golden Questions, wo DU die Antwort kennst
@@ -38,7 +38,7 @@ Volltextsuche gewinnt — dort zuerst hinschauen.
 - **Belegt** heißt: mit `only_context=True` gegenprüfen — nennt die Antwort die
   echte Quell-Chunk, oder hat das Modell frei formuliert?
   ```
-  query(project="fehmarn", question="…", only_context=True)
+  query(project="doc-graph", question="…", only_context=True)
   ```
 
 ### 4. Entscheidungsregel

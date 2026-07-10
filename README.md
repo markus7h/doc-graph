@@ -85,7 +85,10 @@ Das Tool gibt die URL zurück:
 http://myubuntu:5776/<projekt>/graph.html
 ```
 
-Der Viewer ist ein stdlib-Fileserver (LAN-intern, kein Auth/HTTPS).
+Der Viewer-Root (`http://myubuntu:5776/`) zeigt eine Landing-Page: alle
+indexierten Projekte als Karten (Klick öffnet den Graphen) plus eine Kurz-
+anleitung, wie es weitergeht. Der Viewer ist ein stdlib-Fileserver
+(LAN-intern, kein Auth/HTTPS).
 
 ## Typischer Workflow
 

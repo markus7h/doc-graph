@@ -4,7 +4,7 @@ Lauf: python test_graph.py"""
 import json
 import re
 
-from graphview import color_for, graph_html
+from graphview import color_for, graph_html, index_html
 
 
 def test_embedding_and_escaping():
@@ -36,7 +36,16 @@ def test_color_deterministic():
     assert re.fullmatch(r"#[0-9a-f]{6}", color_for("foo"))
 
 
+def test_index_html():
+    html = index_html([("fehmarn", True), ("bö<se", False)])
+    assert 'href="./fehmarn/graph.html"' in html          # gerendertes Projekt verlinkt
+    assert 'graph_view("bö&lt;se")' in html                # todo-Projekt: Name escaped, kein Link
+    assert 'href="./bö' not in html
+    assert "Noch keine Projekte" in index_html([])         # Leerzustand
+
+
 if __name__ == "__main__":
     test_embedding_and_escaping()
     test_color_deterministic()
+    test_index_html()
     print("ok")

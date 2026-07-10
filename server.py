@@ -24,7 +24,7 @@ from pathlib import Path
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-from graphview import color_for, graph_html
+from graphview import color_for, graph_html, index_html
 
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.ollama import ollama_model_complete, ollama_embed
@@ -410,12 +410,33 @@ async def delete_project(project: str, confirm: bool = False) -> str:
     return f"Projekt '{project}' existiert nicht."
 
 
+class _ViewerHandler(SimpleHTTPRequestHandler):
+    """Statischer Fileserver mit hübscher Landing-Page am Root statt rohem
+    Dir-Listing. ponytail: nur '/' abgefangen, Rest bleibt stdlib-static."""
+
+    def do_GET(self):  # noqa: N802 (stdlib-Signatur)
+        if self.path in ("/", "/index.html"):
+            items = sorted(
+                (p.name, (p / "graph.html").exists())
+                for p in PROJECTS_DIR.iterdir()
+                if p.is_dir() and any(p.glob("*.graphml"))
+            )
+            body = index_html(items).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        super().do_GET()
+
+
 def _start_viewer_server() -> None:
     """Serviert PROJECTS_DIR statisch (nur die generierten graph.html-Ansichten
     interessieren). Daemon-Thread, LAN-intern. ponytail: stdlib-Fileserver reicht,
     kein Auth/HTTPS — hinter dem internen Netz, kein öffentlicher Zugang."""
     PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
-    handler = functools.partial(SimpleHTTPRequestHandler, directory=str(PROJECTS_DIR))
+    handler = functools.partial(_ViewerHandler, directory=str(PROJECTS_DIR))
     httpd = HTTPServer(("0.0.0.0", VIEWER_PORT), handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     log.info("Graph-Viewer läuft auf Port %s (http://%s:%s/<projekt>/graph.html)",

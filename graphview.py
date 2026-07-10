@@ -26,6 +26,73 @@ def color_for(t: str) -> str:
     return "#%06x" % (int(hashlib.md5(t.encode()).hexdigest(), 16) & 0xAAAAAA | 0x333333)
 
 
+def _esc(s: str) -> str:
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def index_html(items: list[tuple[str, bool]]) -> str:
+    """Landing-Page für den Viewer-Root. items = (projekt, hat_graph_html).
+    Erklärt, was zu sehen ist und wie es weitergeht (statt rohem Dir-Listing)."""
+    if items:
+        rows = "\n".join(
+            (f'<a class="card{"" if has else " todo"}" '
+             f'{"href=\"./" + _esc(p) + "/graph.html\"" if has else ""}>'
+             f'<span class="nm">{_esc(p)}</span>'
+             + ('<span class="go">Graph öffnen →</span>' if has else
+                '<span class="hint">noch nicht gerendert — <code>graph_view("'
+                + _esc(p) + '")</code> aufrufen</span>')
+             + "</a>")
+            for p, has in items
+        )
+    else:
+        rows = ('<p class="empty">Noch keine Projekte indexiert. Erst '
+                "<code>ingest_paperless(...)</code> oder <code>ingest_directory(...)</code> "
+                "aufrufen, dann <code>graph_view(projekt)</code>.</p>")
+    return f"""<!doctype html>
+<html lang="de"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>doc-graph · Knowledge Graphs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{{--bg:#fafafa;--card:#fff;--border:#ececec;--accent:#388e3c;--ah:#2e7d32;--text:#333;--muted:#666}}
+  *{{box-sizing:border-box;margin:0;padding:0}}
+  body{{background:var(--bg);color:var(--text);font-family:"Source Sans 3","Source Sans Pro",Arial,sans-serif;letter-spacing:.15pt;font-size:14px;padding:32px;max-width:760px;margin:0 auto}}
+  h1{{font-size:22px;font-weight:700;margin-bottom:4px}}
+  .sub{{color:var(--muted);font-size:13px;margin-bottom:24px}}
+  h2{{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 12px}}
+  .grid{{display:grid;gap:10px;margin-bottom:28px}}
+  .card{{display:flex;align-items:center;justify-content:space-between;gap:12px;
+    background:var(--card);border:1px solid var(--border);border-left:3px solid var(--accent);
+    border-radius:10px;padding:14px 18px;text-decoration:none;color:var(--text);transition:box-shadow .15s}}
+  .card:hover{{box-shadow:0 3px 14px rgba(0,0,0,.08)}}
+  .card.todo{{border-left-color:#bbb;cursor:default}}
+  .nm{{font-weight:600;font-size:15px}}
+  .go{{color:var(--accent);font-size:13px;font-weight:600;white-space:nowrap}}
+  .hint,.empty{{color:var(--muted);font-size:12px}}
+  code{{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:1px 5px}}
+  .steps{{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px 22px;font-size:13px;line-height:1.7}}
+  .steps ol{{margin:8px 0 0 18px}}
+</style></head><body>
+<h1>doc-graph</h1>
+<p class="sub">Knowledge Graphs aus deinen Dokumenten — pro Projekt ein Graph. Klick ein Projekt an, um den interaktiven Graphen zu öffnen.</p>
+<h2>Projekte</h2>
+<div class="grid">
+{rows}
+</div>
+<h2>Wie es weitergeht</h2>
+<div class="steps">
+  Neue Dokumente in den Graphen bringen — im Claude-Code-Prompt:
+  <ol>
+    <li><code>ingest_paperless(project="x", tag="…")</code> bzw. <code>ingest_directory(project="x", subpath="…")</code> — indexieren</li>
+    <li><code>graph_view(project="x")</code> — Graph rendern, erscheint dann oben als Karte</li>
+    <li><code>query(project="x", question="…")</code> — den Graphen befragen</li>
+  </ol>
+</div>
+</body></html>"""
+
+
 def _project_select(projects: list[str] | None, current: str) -> str:
     """Dropdown zum Umschalten zwischen Projekt-Graphen (navigiert zur graph.html
     des gewählten Projekts). Leer, wenn nur ein/kein Projekt vorliegt."""
