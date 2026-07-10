@@ -68,9 +68,18 @@ danach von allen Clients gleichermaßen nutzbar.
 ## Graph-Viewer
 
 `graph_view(project)` rendert den Graphen als interaktive HTML-Ansicht
-(vis-network): Knoten = Entitäten (gefärbt nach Typ), Kanten = Beziehungen.
+(vis-network, Optik an den ai-rem-Graphen angelehnt: heller Hintergrund,
+grüner Akzent): Knoten = Entitäten (gefärbt nach Typ), Kanten = Beziehungen.
 Details (Beschreibung) erscheinen per Klick auf Knoten/Kante in einem
-mehrzeiligen Panel am unteren Rand. Das Tool gibt die URL zurück:
+mehrzeiligen Panel. Bedienung:
+
+- **Typ-Filter:** Legende unten anklicken blendet Entitätstypen aus/ein.
+- **Physik:** Checkbox schaltet das Force-Layout an/aus.
+- **Projekt-Umschalter:** Dropdown oben wechselt zur `graph.html` eines anderen
+  Projekts (erscheint ab zwei indexierten Projekten). Jeder `graph_view`-Aufruf
+  rendert alle Projektseiten neu, damit die Umschalter überall konsistent sind.
+
+Das Tool gibt die URL zurück:
 
 ```
 http://myubuntu:5776/<projekt>/graph.html

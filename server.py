@@ -353,29 +353,44 @@ async def graph_view(project: str) -> str:
     import networkx as nx  # via lightrag-hku installiert (NetworkX-Graphstore)
 
     project = _validate_project(project)
-    working_dir = PROJECTS_DIR / project
-    graphmls = list(working_dir.glob("*.graphml"))
-    if not graphmls:
+
+    # Alle Projekte mit Graph — für das Umschalt-Dropdown; jede Seite wird neu
+    # gerendert, damit die Dropdowns projektübergreifend konsistent sind.
+    # ponytail: alle Projekte je Aufruf rendern; on-demand-Route erst nötig, wenn die Projektzahl groß wird.
+    projs = sorted(
+        p.name for p in PROJECTS_DIR.iterdir()
+        if p.is_dir() and any(p.glob("*.graphml"))
+    )
+    if project not in projs:
         return f"Kein Graph für '{project}' gefunden — erst ingest_paperless/ingest_directory ausführen."
 
-    G = nx.read_graphml(str(graphmls[0]))
-    nodes, edges = [], []
-    for n, d in G.nodes(data=True):
-        etype = d.get("entity_type", "")
-        desc = d.get("description", "")
-        nodes.append({
-            "id": n, "label": str(n).strip('"'), "group": etype,
-            "color": color_for(etype),
-            "desc": desc[:400],
-        })
-    for u, v, d in G.edges(data=True):
-        tip = d.get("description") or d.get("keywords") or ""
-        edges.append({"from": u, "to": v, "desc": str(tip)[:400]})
+    def _render(proj: str) -> tuple[int, int]:
+        G = nx.read_graphml(str(next((PROJECTS_DIR / proj).glob("*.graphml"))))
+        nodes, edges = [], []
+        for n, d in G.nodes(data=True):
+            etype = d.get("entity_type", "")
+            nodes.append({
+                "id": n, "label": str(n).strip('"'), "group": etype,
+                "color": color_for(etype),
+                "desc": d.get("description", "")[:400],
+            })
+        for u, v, d in G.edges(data=True):
+            tip = d.get("description") or d.get("keywords") or ""
+            edges.append({"from": u, "to": v, "desc": str(tip)[:400]})
+        (PROJECTS_DIR / proj / "graph.html").write_text(
+            graph_html(nodes, edges, f"KG: {proj}", projects=projs, current=proj),
+            encoding="utf-8")
+        return len(nodes), len(edges)
 
-    out = working_dir / "graph.html"
-    out.write_text(graph_html(nodes, edges, f"KG: {project}"), encoding="utf-8")
+    n_nodes = n_edges = 0
+    for p in projs:
+        counts = _render(p)
+        if p == project:
+            n_nodes, n_edges = counts
+
     url = f"http://{PUBLIC_HOST}:{VIEWER_PORT}/{project}/graph.html"
-    return f"Graph exportiert ({len(nodes)} Entitäten, {len(edges)} Beziehungen).\nÖffnen: {url}"
+    return (f"Graph exportiert ({n_nodes} Entitäten, {n_edges} Beziehungen; "
+            f"{len(projs)} Projekt(e) im Umschalter).\nÖffnen: {url}")
 
 
 @mcp.tool()
