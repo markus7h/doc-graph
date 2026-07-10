@@ -34,17 +34,24 @@ def _esc(s: str) -> str:
 def index_html(items: list[tuple[str, bool]]) -> str:
     """Landing-Page für den Viewer-Root. items = (projekt, hat_graph_html).
     Erklärt, was zu sehen ist und wie es weitergeht (statt rohem Dir-Listing)."""
+    def _row(p: str, has: bool) -> str:
+        e = _esc(p)
+        left = (f'<a class="nm open" href="./{e}/graph.html">{e}'
+                '<span class="go"> · Graph öffnen →</span></a>' if has else
+                f'<span class="nm">{e}</span>'
+                f'<span class="hint">noch nicht gerendert — <code>graph_view("{e}")'
+                "</code> aufrufen</span>")
+        # confirm im Browser (Viewer hat kein Auth) — Löschen entfernt nur den Index
+        form = (f'<form method="post" action="/delete" class="del" '
+                f"onsubmit=\"return confirm('Projekt &quot;{e}&quot; löschen? "
+                "Der Index wird entfernt, die Quelldokumente bleiben.')\">"
+                f'<input type="hidden" name="project" value="{e}">'
+                '<button title="Projekt-Index löschen">Löschen</button></form>')
+        cls = "card" if has else "card todo"
+        return f'<div class="{cls}"><div class="left">{left}</div>{form}</div>'
+
     if items:
-        rows = "\n".join(
-            (f'<a class="card{"" if has else " todo"}" '
-             f'{"href=\"./" + _esc(p) + "/graph.html\"" if has else ""}>'
-             f'<span class="nm">{_esc(p)}</span>'
-             + ('<span class="go">Graph öffnen →</span>' if has else
-                '<span class="hint">noch nicht gerendert — <code>graph_view("'
-                + _esc(p) + '")</code> aufrufen</span>')
-             + "</a>")
-            for p, has in items
-        )
+        rows = "\n".join(_row(p, has) for p, has in items)
     else:
         rows = ('<p class="empty">Noch keine Projekte indexiert. Erst '
                 "<code>ingest_paperless(...)</code> oder <code>ingest_directory(...)</code> "
@@ -65,12 +72,17 @@ def index_html(items: list[tuple[str, bool]]) -> str:
   .grid{{display:grid;gap:10px;margin-bottom:28px}}
   .card{{display:flex;align-items:center;justify-content:space-between;gap:12px;
     background:var(--card);border:1px solid var(--border);border-left:3px solid var(--accent);
-    border-radius:10px;padding:14px 18px;text-decoration:none;color:var(--text);transition:box-shadow .15s}}
+    border-radius:10px;padding:14px 18px;transition:box-shadow .15s}}
   .card:hover{{box-shadow:0 3px 14px rgba(0,0,0,.08)}}
-  .card.todo{{border-left-color:#bbb;cursor:default}}
-  .nm{{font-weight:600;font-size:15px}}
+  .card.todo{{border-left-color:#bbb}}
+  .left{{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;min-width:0}}
+  .nm{{font-weight:600;font-size:15px;color:var(--text);text-decoration:none}}
+  a.nm.open:hover .go{{text-decoration:underline}}
   .go{{color:var(--accent);font-size:13px;font-weight:600;white-space:nowrap}}
   .hint,.empty{{color:var(--muted);font-size:12px}}
+  .del button{{background:none;border:1px solid var(--border);color:var(--muted);
+    border-radius:6px;padding:5px 11px;font-size:12px;cursor:pointer;white-space:nowrap;transition:all .15s}}
+  .del button:hover{{border-color:#dd3333;color:#dd3333;background:#fff5f5}}
   code{{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:1px 5px}}
   .steps{{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px 22px;font-size:13px;line-height:1.7}}
   .steps ol{{margin:8px 0 0 18px}}

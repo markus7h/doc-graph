@@ -41,6 +41,10 @@ def test_index_html():
     assert 'href="./fehmarn/graph.html"' in html          # gerendertes Projekt verlinkt
     assert 'graph_view("bö&lt;se")' in html                # todo-Projekt: Name escaped, kein Link
     assert 'href="./bö' not in html
+    # Löschen: jede Karte hat ein Delete-Form mit escaptem Projektnamen
+    assert html.count('action="/delete"') == 2
+    assert '<input type="hidden" name="project" value="fehmarn">' in html
+    assert '<input type="hidden" name="project" value="bö&lt;se">' in html
     assert "Noch keine Projekte" in index_html([])         # Leerzustand
 
 

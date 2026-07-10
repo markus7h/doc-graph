@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import threading
+import urllib.parse
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 
@@ -393,6 +394,20 @@ async def graph_view(project: str) -> str:
             f"{len(projs)} Projekt(e) im Umschalter).\nÖffnen: {url}")
 
 
+def _delete_project_dir(project: str) -> bool:
+    """Löscht Index-Verzeichnis + gecachte Instanz (nicht die Quelldokumente).
+    True, wenn etwas gelöscht wurde. Validiert gegen Path-Traversal."""
+    import shutil
+
+    _validate_project(project)
+    _instances.pop(project, None)
+    target = PROJECTS_DIR / project
+    if target.exists():
+        shutil.rmtree(target)
+        return True
+    return False
+
+
 @mcp.tool()
 async def delete_project(project: str, confirm: bool = False) -> str:
     """Löscht einen kompletten Projekt-Index (nicht die Quelldokumente!).
@@ -400,12 +415,7 @@ async def delete_project(project: str, confirm: bool = False) -> str:
     _validate_project(project)
     if not confirm:
         return f"Sicherheitsabfrage: erneut mit confirm=True aufrufen, um '{project}' zu löschen."
-    import shutil
-
-    _instances.pop(project, None)
-    target = PROJECTS_DIR / project
-    if target.exists():
-        shutil.rmtree(target)
+    if _delete_project_dir(project):
         return f"Projekt '{project}' gelöscht."
     return f"Projekt '{project}' existiert nicht."
 
@@ -429,6 +439,23 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
         super().do_GET()
+
+    def do_POST(self):  # noqa: N802 (stdlib-Signatur)
+        # nur Projekt-Löschung; Bestätigung passiert im Browser (confirm-Dialog)
+        if self.path != "/delete":
+            self.send_error(404)
+            return
+        length = int(self.headers.get("Content-Length", 0))
+        params = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8"))
+        project = (params.get("project") or [""])[0]
+        try:
+            _delete_project_dir(project)
+        except ValueError:
+            self.send_error(400, "invalid project name")
+            return
+        self.send_response(303)  # zurück zur Landing-Page
+        self.send_header("Location", "/")
+        self.end_headers()
 
 
 def _start_viewer_server() -> None:

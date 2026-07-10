@@ -87,8 +87,10 @@ http://myubuntu:5776/<projekt>/graph.html
 
 Der Viewer-Root (`http://myubuntu:5776/`) zeigt eine Landing-Page: alle
 indexierten Projekte als Karten (Klick öffnet den Graphen) plus eine Kurz-
-anleitung, wie es weitergeht. Der Viewer ist ein stdlib-Fileserver
-(LAN-intern, kein Auth/HTTPS).
+anleitung, wie es weitergeht. Jede Karte hat einen **Löschen**-Button, der den
+Projekt-Index nach Browser-Bestätigung entfernt (Quelldokumente bleiben) —
+serverseitig derselbe Weg wie das MCP-Tool `delete_project`. Der Viewer ist ein
+stdlib-Fileserver (LAN-intern, kein Auth/HTTPS).
 
 ## Typischer Workflow
 
