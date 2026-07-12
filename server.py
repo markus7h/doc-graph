@@ -239,7 +239,7 @@ async def query(
     project: str,
     question: str,
     mode: str = "hybrid",
-    only_context: bool = False,
+    only_context: bool = True,
 ) -> str:
     """Fragt den Knowledge Graph eines Projekts ab.
 
@@ -248,9 +248,10 @@ async def query(
         question: Frage in natürlicher Sprache (Deutsch ok).
         mode: 'local' (entitätsnah), 'global' (übergreifende Muster),
               'hybrid' (Standard), 'mix' (KG + Vektor), 'naive' (nur Vektor).
-        only_context: True liefert die rohen Kontext-Chunks/Entitäten statt
-              einer generierten Antwort — nützlich, wenn Claude selbst
-              formulieren oder wörtlich zitieren soll.
+        only_context: DEFAULT True — liefert die rohen Kontext-Chunks/Entitäten,
+              Claude formuliert die Antwort selbst. False lässt stattdessen das
+              lokale LLM formulieren; auf geteilter GPU aktuell sehr langsam
+              (>300 s -> MCP-Timeout), daher nur bewusst setzen.
     """
     rag = await get_rag(project)
     param = QueryParam(mode=mode, only_need_context=only_context)

@@ -54,6 +54,12 @@ cp .env.example .env   # PAPERLESS_TOKEN eintragen
 docker compose up -d --build
 ```
 
+Der Daten-Mount in `docker-compose.yml` ist ein **absoluter Pfad**
+(`/var/local/mydocker/doc-graph/data/projects`), bewusst kein `./data`: ein
+`docker compose up` aus dem Git-Repo (falsches CWD) würde sonst dessen leeres
+`./data` mounten — der Index wäre „weg" und alle Queries lieferten no-context.
+Der kanonische Datenort ist immer das Deploy-Verzeichnis.
+
 Das externe Docker-Netz `paperless-ai_default` verbindet doc-graph mit
 `paperless-llama` (mistral) und `paperless-llama-embed` (bge-m3) sowie
 `paperless` (NGX via LAN-DNS) — dieselben Namen wie paperless-ai. Bei
@@ -117,9 +123,9 @@ stdlib-Fileserver (LAN-intern, kein Auth/HTTPS).
          question="Chronologie aller Schreiben zur Grundschuld",
          mode="global")
 
-3. Für wörtliche Zitate / juristische Präzision:
-   query(..., only_context=True)   → liefert Roh-Chunks + Entitäten,
-                                     Claude formuliert selbst
+3. query liefert per Default nur den Kontext (Roh-Chunks + Entitäten),
+   Claude formuliert selbst. Lokale LLM-Formulierung nur bewusst:
+   query(..., only_context=False)  → langsam auf geteilter GPU
 
 4. Visuell verstehen:
    graph_view(project="fehmarn")   → URL im Browser öffnen
@@ -133,7 +139,7 @@ stdlib-Fileserver (LAN-intern, kein Auth/HTTPS).
 | `ingest_paperless(project, tag/document_type/correspondent/query_text)` | Delta-Indexierung aus Paperless (Hash-Manifest, nur Neues/Geändertes) — Extraktion läuft im Hintergrund, das Tool kehrt sofort zurück |
 | `ingest_status(project)` | Fortschritt/Ergebnis des laufenden bzw. letzten Ingest-Laufs |
 | `ingest_directory(project, subpath)` | .txt/.md aus gemountetem Verzeichnis |
-| `query(project, question, mode, only_context)` | Abfrage: local / global / hybrid / mix / naive |
+| `query(project, question, mode, only_context)` | Abfrage: local / global / hybrid / mix / naive. `only_context` ist **default True** (Claude formuliert aus dem Kontext); die lokale LLM-Formulierung ist auf geteilter GPU zu langsam |
 | `get_entity(project, entity_name)` | Alle Fakten/Relationen zu einer Entität |
 | `graph_view(project)` | Interaktive HTML-Graphansicht, gibt Viewer-URL zurück |
 | `delete_project(project, confirm)` | Index löschen (Quellen bleiben) |

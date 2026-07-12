@@ -27,8 +27,11 @@ services:
       PROJECTS_DIR: /data/projects
       MAX_ASYNC: ${MAX_ASYNC:-2}
     volumes:
-      # Persistente KG-Stores, ein Unterordner pro Projekt
-      - ./data/projects:/data/projects
+      # Persistente KG-Stores, ein Unterordner pro Projekt.
+      # ABSOLUTER Pfad bewusst: ein 'docker compose up' aus dem Git-Repo (falsches
+      # CWD) darf NICHT ./data des Repos mounten -> sonst leerer Index, alle Queries
+      # liefern no-context. Kanonischer Datenort ist das Deploy-Dir.
+      - /var/local/mydocker/doc-graph/data/projects:/data/projects
       # Optional für ingest_directory: lokales Dokumentverzeichnis read-only.
       # Pfad an myubuntu anpassen und einkommentieren; primäre Quelle ist Paperless.
       # - /home/markus/dokumente:/data/inputs:ro
