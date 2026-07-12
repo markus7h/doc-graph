@@ -139,7 +139,7 @@ stdlib-Fileserver (LAN-intern, kein Auth/HTTPS).
 | `ingest_paperless(project, tag/document_type/correspondent/query_text)` | Delta-Indexierung aus Paperless (Hash-Manifest, nur Neues/Geändertes) — Extraktion läuft im Hintergrund, das Tool kehrt sofort zurück |
 | `ingest_status(project)` | Fortschritt/Ergebnis des laufenden bzw. letzten Ingest-Laufs |
 | `ingest_directory(project, subpath)` | .txt/.md aus gemountetem Verzeichnis |
-| `query(project, question, mode, only_context)` | Abfrage: local / global / hybrid / mix / naive. `only_context` ist **default True** (Claude formuliert aus dem Kontext); die lokale LLM-Formulierung ist auf geteilter GPU zu langsam |
+| `query(project, question, mode, only_context, max_total_tokens)` | Abfrage: local / global / hybrid / mix / naive. `only_context` ist **default True** (Claude formuliert aus dem Kontext); die lokale LLM-Formulierung ist auf geteilter GPU zu langsam. `max_total_tokens` (default 12000) deckelt den Kontext, damit er das MCP-Token-Limit nicht sprengt |
 | `get_entity(project, entity_name)` | Alle Fakten/Relationen zu einer Entität |
 | `graph_view(project)` | Interaktive HTML-Graphansicht, gibt Viewer-URL zurück |
 | `delete_project(project, confirm)` | Index löschen (Quellen bleiben) |
@@ -156,12 +156,29 @@ stdlib-Fileserver (LAN-intern, kein Auth/HTTPS).
 - **Modellqualität = Graphqualität.** Wenn der Graph zu dünn wirkt
   (wenige Relationen), Extraktion mit größerem/anderem Modell wiederholen:
   `delete_project` + erneuter Ingest mit geändertem `LLM_MODEL`.
+- **Voll-GPU-Extraktion via qwen-Swap.** mistral-24b passt nur mit CPU-Offload
+  in die 16 GB (13/40 Layer im RAM → langsam, Extraktions-Timeouts). Da paperless-ai
+  selten läuft, teilt man die GPU **zeitlich**: `swap-to-qwen.sh` stoppt mistral,
+  pausiert paperless-ai und lädt qwen3-14b (Q5_K_M) **voll auf die GPU** unter
+  demselben Netz-Alias `paperless-llama` (doc-graph merkt nichts). Dann
+  `ingest_paperless(...)` triggern, `ingest_status` bis `done` pollen,
+  abschließend `swap-to-mistral.sh` (qwen raus, mistral + paperless-ai zurück).
 - **Wöchentlicher Modell-Check:** `model_check.sh` (via cron) lässt einen
   Claude-Agenten read-only recherchieren, ob es ein besseres lokales LLM für die
   Extraktion gibt als das aktuelle mistral, und schreibt das Ergebnis nach
   `model_check_report.md` (`EMPFEHLUNG: bleiben` / `EMPFEHLUNG: wechseln zu <tag>`).
 - **EMBED_DIM darf sich nachträglich nicht ändern** — Embedding-Modell pro
   Projekt festnageln, sonst Index neu aufbauen.
+- **`CHUNK_TOKEN_SIZE`** (default 600, war LightRAG-Default 1200): kleinere Chunks
+  = weniger Entitäten pro Extraktions-Call, verhindert den 480s-Worker-Timeout bei
+  dichten Tabellen-Docs. Wirkt nur auf **neu** indexierte Dokumente — für den
+  Bestand `delete_project` + Re-Ingest.
+- **`QUERY_MAX_TOKENS`** (default 12000): globaler Default für das Kontext-Budget je
+  Query; pro Abfrage via `max_total_tokens` überschreibbar.
+- **`GRAPH_LANGUAGE`** (default `German`): Sprache der extrahierten Entitäten/
+  Beschreibungen. LightRAG-Default wäre `English` (Graph-Einträge landen dann
+  englisch trotz deutscher Docs). Wirkt nur auf **neu** indexierte Dokumente —
+  Bestand für deutsche Einträge `delete_project` + Re-Ingest.
 - **Backup:** `./data/projects/` sichern; das ist der komplette Zustand
   (Graph GraphML, Vektoren, KV-Store, Manifest — alles Dateien, kein DB-Server).
 - **Speicher-Backends:** Default sind Datei-basierte Stores (NetworkX +

@@ -48,6 +48,16 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "mistral-small3.2:24b")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "bge-m3")
 EMBED_DIM = int(os.environ.get("EMBED_DIM", "1024"))
 MAX_ASYNC = int(os.environ.get("MAX_ASYNC", "2"))
+# Chunk-Größe (Tokens). 600 statt LightRAG-Default 1200: weniger Entitäten pro
+# Chunk -> kürzere Extraktion, beseitigt den 480s-Worker-Timeout bei dichten
+# Tabellen-/Listen-Docs (siehe INGEST-FAILURE-ANALYSE.md).
+CHUNK_TOKEN_SIZE = int(os.environ.get("CHUNK_TOKEN_SIZE", "600"))
+# Kontext-Budget je Query (Tokens). 12000 statt Default 30000: hält den
+# only_context-Dump unter dem MCP-Token-Limit (Issue #2) und fokussiert.
+QUERY_MAX_TOKENS = int(os.environ.get("QUERY_MAX_TOKENS", "12000"))
+# Sprache der extrahierten Entitäten/Beschreibungen. LightRAG-Default ist
+# "English" -> Graph-Einträge landen auf Englisch, obwohl die Docs deutsch sind.
+GRAPH_LANGUAGE = os.environ.get("GRAPH_LANGUAGE", "German")
 
 
 async def _llm_model_func(prompt, system_prompt=None, history_messages=None, **kwargs):
@@ -125,6 +135,8 @@ async def get_rag(project: str) -> LightRAG:
             llm_model_func=_llm_model_func,
             llm_model_name=LLM_MODEL,
             llm_model_max_async=MAX_ASYNC,
+            chunk_token_size=CHUNK_TOKEN_SIZE,
+            addon_params={"language": GRAPH_LANGUAGE},
             embedding_func=EmbeddingFunc(
                 embedding_dim=EMBED_DIM,
                 max_token_size=8192,
@@ -240,6 +252,7 @@ async def query(
     question: str,
     mode: str = "hybrid",
     only_context: bool = True,
+    max_total_tokens: int = QUERY_MAX_TOKENS,
 ) -> str:
     """Fragt den Knowledge Graph eines Projekts ab.
 
@@ -252,9 +265,15 @@ async def query(
               Claude formuliert die Antwort selbst. False lässt stattdessen das
               lokale LLM formulieren; auf geteilter GPU aktuell sehr langsam
               (>300 s -> MCP-Timeout), daher nur bewusst setzen.
+        max_total_tokens: Kontext-Budget (Default 12000). Deckelt den
+              only_context-Dump, damit er das MCP-Token-Limit nicht sprengt
+              (Issue #2). Höher setzen für breitere Aggregationsfragen.
     """
     rag = await get_rag(project)
-    param = QueryParam(mode=mode, only_need_context=only_context)
+    param = QueryParam(
+        mode=mode, only_need_context=only_context,
+        max_total_tokens=max_total_tokens,
+    )
     result = await rag.aquery(question, param=param)
     return str(result)
 
