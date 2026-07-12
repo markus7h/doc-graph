@@ -3,8 +3,9 @@
 Ein Container auf `myubuntu` (RTX 5080), der pro "Kontext"/Projekt einen
 abfragbaren Knowledge Graph (LightRAG: Graph + Vektoren, hybrid) bereithält und
 ihn als MCP-Server für Claude Code exponiert. Dokumentquelle ist primär
-Paperless-NGX — der OCR-Text kommt fertig über die REST-API, Metadaten
-(Korrespondent, Datum) wandern als Fakten mit in den Graph. Ein
+Paperless-NGX — der OCR-Text kommt fertig über die REST-API, die kuratierten
+Metadaten (Korrespondent, Datum, Dokumenttyp, Schlagworte/Tags) wandern als
+Fakten mit in den Graph und werden so zu abfragbaren Knoten. Ein
 mitgelieferter Graph-Viewer macht den Graphen im Browser durchklickbar.
 
 ## Architektur

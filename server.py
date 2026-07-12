@@ -160,15 +160,22 @@ async def _paperless_documents(client: httpx.AsyncClient, params: dict):
         params = None  # next-URL enthält bereits alle Parameter
 
 
-def _doc_to_text(doc: dict, correspondent_name: str | None) -> str:
+def _doc_to_text(doc: dict, correspondent_name: str | None,
+                 tag_names: list[str] | None = None,
+                 doctype_name: str | None = None) -> str:
     """Metadaten-Header + OCR-Inhalt. Der Header landet mit im Graph und
-    verankert Datum/Absender als extrahierbare Fakten."""
+    verankert Datum/Absender/Typ/Schlagworte als extrahierbare Fakten. Die
+    kuratierten Paperless-Metadaten sind verlässlicher als LLM-geratene Entitäten."""
     header = [
         f"Dokument: {doc.get('title', '')}",
         f"Datum: {doc.get('created', '')[:10]}",
     ]
     if correspondent_name:
         header.append(f"Korrespondent: {correspondent_name}")
+    if doctype_name:
+        header.append(f"Dokumenttyp: {doctype_name}")
+    if tag_names:
+        header.append(f"Schlagworte: {', '.join(tag_names)}")
     if doc.get("archive_serial_number"):
         header.append(f"ASN: {doc['archive_serial_number']}")
     return "\n".join(header) + "\n\n" + (doc.get("content") or "")
@@ -237,7 +244,7 @@ async def ingest_paperless(
         correspondent: Korrespondent-Name.
         query_text: Freitext-Suche (Paperless-Volltextsuche).
     """
-    params: dict = {"fields": "id,title,created,content,correspondent,archive_serial_number"}
+    params: dict = {"fields": "id,title,created,content,correspondent,document_type,tags,archive_serial_number"}
     if tag:
         params["tags__name__iexact"] = tag
     if document_type:
@@ -255,15 +262,25 @@ async def ingest_paperless(
     new, updated, skipped, texts, ids = 0, 0, 0, [], []
 
     async with _paperless_client() as client:
-        # Korrespondenten-Namen einmal auflösen
-        corr_map = {}
-        r = await client.get("/api/correspondents/", params={"page_size": 200})
-        if r.status_code == 200:
-            corr_map = {c["id"]: c["name"] for c in r.json().get("results", [])}
+        # Korrespondenten-/Tag-/Dokumenttyp-Namen einmal auflösen (IDs -> Namen)
+        async def _id_name_map(path: str, page_size: int) -> dict:
+            r = await client.get(path, params={"page_size": page_size})
+            if r.status_code == 200:
+                return {x["id"]: x["name"] for x in r.json().get("results", [])}
+            return {}
+
+        corr_map = await _id_name_map("/api/correspondents/", 1000)
+        tag_map = await _id_name_map("/api/tags/", 1000)
+        doctype_map = await _id_name_map("/api/document_types/", 1000)
 
         async for doc in _paperless_documents(client, params):
             doc_key = f"paperless:{doc['id']}"
-            text = _doc_to_text(doc, corr_map.get(doc.get("correspondent")))
+            tag_names = [tag_map[t] for t in doc.get("tags", []) if t in tag_map]
+            text = _doc_to_text(
+                doc, corr_map.get(doc.get("correspondent")),
+                tag_names=tag_names,
+                doctype_name=doctype_map.get(doc.get("document_type")),
+            )
             h = _hash(text)
             if manifest.get(doc_key) == h:
                 skipped += 1
