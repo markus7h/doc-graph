@@ -34,9 +34,10 @@ def _esc(s: str) -> str:
 def _status_badge(st: dict) -> str:
     """Ingest-Status als Badge für eine Projekt-Karte (leer, wenn kein Status)."""
     state = st.get("state")
+    total = st.get("total", "?")
     if state == "running":
-        return (f'<span class="badge run">⏳ Ingest läuft — {st.get("pending", "?")} '
-                f'Dokumente in Arbeit (seit {_esc(st.get("at", ""))})</span>')
+        return (f'<span class="badge run">⏳ Ingest läuft — {st.get("done", 0)}/{total} '
+                f'Dokumente extrahiert</span>')
     if state == "done":
         return (f'<span class="badge done">✓ zuletzt indexiert: {st.get("new", 0)} neu, '
                 f'{st.get("updated", 0)} aktualisiert ({_esc(st.get("at", ""))})</span>')

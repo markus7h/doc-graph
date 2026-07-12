@@ -268,7 +268,7 @@ async def ingest_paperless(
     rag = await get_rag(project)
     manifest = _load_manifest(project)
 
-    new, updated, skipped, texts, ids = 0, 0, 0, [], []
+    new, updated, skipped, pending = 0, 0, 0, []  # pending: (doc_key, text, hash)
 
     async with _paperless_client() as client:
         # Korrespondenten-/Tag-/Dokumenttyp-Namen einmal auflösen (IDs -> Namen)
@@ -298,11 +298,11 @@ async def ingest_paperless(
                 updated += 1
             else:
                 new += 1
-            manifest[doc_key] = h
-            texts.append(text)
-            ids.append(doc_key)
+            # ponytail: Hash NICHT vorab ins Manifest — erst nach erfolgreichem
+            # Insert im Hintergrund, damit ein Abbruch das Dokument nicht "erledigt".
+            pending.append((doc_key, text, h))
 
-    if not texts:
+    if not pending:
         return (
             f"Projekt '{project}': nichts zu tun ({skipped} unverändert). "
             f"Gesamt im Index: {len(manifest)} Dokumente."
@@ -314,28 +314,41 @@ async def ingest_paperless(
             f'Fortschritt: ingest_status(project="{project}").'
         )
 
+    total = len(pending)
+
     # Extraktion ist der teure Teil (viele LLM-Calls, ggf. Stunden). Im
-    # Hintergrund laufen lassen, damit der MCP-Call nicht ins Timeout rennt.
-    # Manifest erst nach Erfolg speichern -> Abbruch mitten drin => Re-Ingest.
+    # Hintergrund + Dokument für Dokument, damit man echten Fortschritt (done/total)
+    # sieht und ein Abbruch nur das laufende Dokument kostet (Manifest je Doc gespeichert).
     async def _run():
+        done = 0
         try:
-            await rag.ainsert(texts, ids=ids)
-            _save_manifest(project, manifest)
+            for doc_key, text, h in pending:
+                await rag.ainsert([text], ids=[doc_key])
+                manifest[doc_key] = h
+                _save_manifest(project, manifest)
+                done += 1
+                _ingest_status[project] = {
+                    "state": "running", "done": done, "total": total,
+                    "new": new, "updated": updated, "skipped": skipped,
+                    "at": _now(), "_task": _ingest_status.get(project, {}).get("_task"),
+                }
             _ingest_status[project] = {
-                "state": "done", "new": new, "updated": updated,
-                "skipped": skipped, "total": len(manifest), "at": _now(),
+                "state": "done", "done": done, "total": total, "new": new,
+                "updated": updated, "skipped": skipped, "at": _now(),
             }
         except Exception as e:  # noqa: BLE001 — Status festhalten, nicht crashen
             log.exception("Ingest fehlgeschlagen für %s", project)
-            _ingest_status[project] = {"state": "error", "error": str(e), "at": _now()}
+            _ingest_status[project] = {
+                "state": "error", "error": str(e), "done": done, "total": total, "at": _now(),
+            }
 
     task = asyncio.create_task(_run())
     _ingest_status[project] = {
-        "state": "running", "pending": len(texts), "new": new,
+        "state": "running", "done": 0, "total": total, "new": new,
         "updated": updated, "skipped": skipped, "at": _now(), "_task": task,
     }
     return (
-        f"Projekt '{project}': Ingest von {len(texts)} Dokumenten "
+        f"Projekt '{project}': Ingest von {total} Dokumenten "
         f"({new} neu, {updated} aktualisiert, {skipped} übersprungen) "
         f"im Hintergrund gestartet — Extraktion läuft, das dauert. "
         f'Fortschritt: ingest_status(project="{project}").'
