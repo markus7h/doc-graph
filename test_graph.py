@@ -48,8 +48,21 @@ def test_index_html():
     assert "Noch keine Projekte" in index_html([])         # Leerzustand
 
 
+def test_index_status():
+    # Import-Status: laufender Ingest -> Badge + Auto-Refresh
+    st = {"fehmarn": {"state": "running", "pending": 28, "at": "2026-07-12 07:00:00"}}
+    h = index_html([("fehmarn", True)], st)
+    assert "Ingest läuft" in h and "28" in h
+    assert 'http-equiv="refresh"' in h                      # pollt nur bei running
+    # done/error: kein Auto-Refresh, aber Badge sichtbar
+    h2 = index_html([("fehmarn", True)], {"fehmarn": {"state": "done", "new": 0, "updated": 28}})
+    assert "zuletzt indexiert" in h2 and 'http-equiv="refresh"' not in h2
+    assert 'http-equiv="refresh"' not in index_html([("fehmarn", True)])  # ohne Status
+
+
 if __name__ == "__main__":
     test_embedding_and_escaping()
     test_color_deterministic()
     test_index_html()
+    test_index_status()
     print("ok")

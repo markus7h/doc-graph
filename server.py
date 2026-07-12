@@ -489,12 +489,16 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802 (stdlib-Signatur)
         if self.path in ("/", "/index.html"):
-            items = sorted(
-                (p.name, (p / "graph.html").exists())
+            rendered = {
+                p.name: (p / "graph.html").exists()
                 for p in PROJECTS_DIR.iterdir()
                 if p.is_dir() and any(p.glob("*.graphml"))
-            )
-            body = index_html(items).encode("utf-8")
+            }
+            # laufende/erledigte Ingests ohne (noch) gerenderten Graph mit anzeigen
+            for name in _ingest_status:
+                rendered.setdefault(name, False)
+            items = sorted(rendered.items())
+            body = index_html(items, _ingest_status).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))

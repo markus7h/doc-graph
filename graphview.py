@@ -31,16 +31,35 @@ def _esc(s: str) -> str:
             .replace(">", "&gt;").replace('"', "&quot;"))
 
 
-def index_html(items: list[tuple[str, bool]]) -> str:
+def _status_badge(st: dict) -> str:
+    """Ingest-Status als Badge für eine Projekt-Karte (leer, wenn kein Status)."""
+    state = st.get("state")
+    if state == "running":
+        return (f'<span class="badge run">⏳ Ingest läuft — {st.get("pending", "?")} '
+                f'Dokumente in Arbeit (seit {_esc(st.get("at", ""))})</span>')
+    if state == "done":
+        return (f'<span class="badge done">✓ zuletzt indexiert: {st.get("new", 0)} neu, '
+                f'{st.get("updated", 0)} aktualisiert ({_esc(st.get("at", ""))})</span>')
+    if state == "error":
+        return f'<span class="badge err">✗ Ingest-Fehler: {_esc(st.get("error", ""))}</span>'
+    return ""
+
+
+def index_html(items: list[tuple[str, bool]], status: dict | None = None) -> str:
     """Landing-Page für den Viewer-Root. items = (projekt, hat_graph_html).
+    status = {projekt: ingest_status_dict} — zeigt Import-Fortschritt pro Karte.
     Erklärt, was zu sehen ist und wie es weitergeht (statt rohem Dir-Listing)."""
+    status = status or {}
+    running = any(s.get("state") == "running" for s in status.values())
+
     def _row(p: str, has: bool) -> str:
         e = _esc(p)
+        badge = _status_badge(status.get(p, {}))
         left = (f'<a class="nm open" href="./{e}/graph.html">{e}'
                 '<span class="go"> · Graph öffnen →</span></a>' if has else
                 f'<span class="nm">{e}</span>'
                 f'<span class="hint">noch nicht gerendert — <code>graph_view("{e}")'
-                "</code> aufrufen</span>")
+                "</code> aufrufen</span>") + badge
         # confirm im Browser (Viewer hat kein Auth) — Löschen entfernt nur den Index
         form = (f'<form method="post" action="/delete" class="del" '
                 f"onsubmit=\"return confirm('Projekt &quot;{e}&quot; löschen? "
@@ -59,6 +78,7 @@ def index_html(items: list[tuple[str, bool]]) -> str:
     return f"""<!doctype html>
 <html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+{'<meta http-equiv="refresh" content="5">' if running else ''}
 <title>doc-graph · Knowledge Graphs</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -80,6 +100,10 @@ def index_html(items: list[tuple[str, bool]]) -> str:
   a.nm.open:hover .go{{text-decoration:underline}}
   .go{{color:var(--accent);font-size:13px;font-weight:600;white-space:nowrap}}
   .hint,.empty{{color:var(--muted);font-size:12px}}
+  .badge{{font-size:12px;font-weight:600;padding:2px 9px;border-radius:20px;white-space:nowrap}}
+  .badge.run{{background:#fff8e1;color:#8a6d00;border:1px solid #ffe082}}
+  .badge.done{{background:#edf7ee;color:var(--ah);border:1px solid #c8e6c9}}
+  .badge.err{{background:#fff5f5;color:#c62828;border:1px solid #ffcdd2}}
   .del button{{background:none;border:1px solid var(--border);color:var(--muted);
     border-radius:6px;padding:5px 11px;font-size:12px;cursor:pointer;white-space:nowrap;transition:all .15s}}
   .del button:hover{{border-color:#dd3333;color:#dd3333;background:#fff5f5}}

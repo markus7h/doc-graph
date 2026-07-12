@@ -88,7 +88,11 @@ http://myubuntu:5776/<projekt>/graph.html
 
 Der Viewer-Root (`http://myubuntu:5776/`) zeigt eine Landing-Page: alle
 indexierten Projekte als Karten (Klick öffnet den Graphen) plus eine Kurz-
-anleitung, wie es weitergeht. Jede Karte hat einen **Löschen**-Button, der den
+anleitung, wie es weitergeht. Läuft gerade ein `ingest_paperless`, trägt die
+betroffene Karte ein **Import-Status-Badge** (⏳ läuft / ✓ zuletzt indexiert /
+✗ Fehler) — bei laufendem Import lädt die Seite sich alle 5 s selbst neu, sodass
+man den Fortschritt live sieht, ohne ein MCP-Tool aufrufen zu müssen. Jede Karte
+hat einen **Löschen**-Button, der den
 Projekt-Index nach Browser-Bestätigung entfernt (Quelldokumente bleiben) —
 serverseitig derselbe Weg wie das MCP-Tool `delete_project`. Der Viewer ist ein
 stdlib-Fileserver (LAN-intern, kein Auth/HTTPS).
