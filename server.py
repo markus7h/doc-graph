@@ -28,8 +28,10 @@ from mcp.server.fastmcp import FastMCP
 
 from graphview import color_for, graph_html, index_html
 
+import numpy as np
+
 from lightrag import LightRAG, QueryParam
-from lightrag.llm.openai import openai_complete_if_cache, openai_embed
+from lightrag.llm.openai import openai_complete_if_cache
 from lightrag.utils import EmbeddingFunc
 from lightrag.kg.shared_storage import initialize_pipeline_status, get_namespace_data
 
@@ -56,6 +58,21 @@ async def _llm_model_func(prompt, system_prompt=None, history_messages=None, **k
         base_url=LLM_BASE_URL, api_key=LLM_API_KEY,
         **kwargs,
     )
+
+
+# Direkter OpenAI-kompatibler Embedding-Call statt lightrag.llm.openai.openai_embed:
+# dessen Decorator erzwingt embedding_dim=1536 (ada-002) und validiert hart dagegen —
+# unvereinbar mit bge-m3 (1024). Hier gilt allein EmbeddingFunc(embedding_dim=EMBED_DIM).
+async def _embed_func(texts):
+    async with httpx.AsyncClient(timeout=120) as client:
+        r = await client.post(
+            f"{EMBED_BASE_URL}/embeddings",
+            json={"model": EMBED_MODEL, "input": list(texts)},
+            headers={"Authorization": f"Bearer {LLM_API_KEY}"},
+        )
+        r.raise_for_status()
+        data = r.json()["data"]
+    return np.array([d["embedding"] for d in data], dtype=np.float32)
 
 PAPERLESS_URL = os.environ.get("PAPERLESS_URL", "").rstrip("/")
 PAPERLESS_TOKEN = os.environ.get("PAPERLESS_TOKEN", "")
@@ -111,10 +128,7 @@ async def get_rag(project: str) -> LightRAG:
             embedding_func=EmbeddingFunc(
                 embedding_dim=EMBED_DIM,
                 max_token_size=8192,
-                func=lambda texts: openai_embed(
-                    texts, model=EMBED_MODEL,
-                    base_url=EMBED_BASE_URL, api_key=LLM_API_KEY,
-                ),
+                func=_embed_func,
             ),
         )
         await rag.initialize_storages()
