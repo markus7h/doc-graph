@@ -90,9 +90,11 @@ Der Viewer-Root (`http://myubuntu:5776/`) zeigt eine Landing-Page: alle
 indexierten Projekte als Karten (Klick öffnet den Graphen) plus eine Kurz-
 anleitung, wie es weitergeht. Läuft gerade ein `ingest_paperless`, trägt die
 betroffene Karte ein **Import-Status-Badge** (⏳ läuft `done/total` / ✓ zuletzt
-indexiert / ✗ Fehler) — Dokumente werden einzeln extrahiert und der Zähler nach
-jedem hochgezählt, sodass man den echten Fortschritt sieht. Bei laufendem Import
-lädt die Seite sich alle 5 s selbst neu, ohne dass man ein MCP-Tool aufrufen muss. Jede Karte
+indexiert / ✗ Fehler). Dokumente werden einzeln extrahiert (Zähler pro fertigem
+Dokument); zusätzlich zeigt das Badge LightRAGs aktuelle Live-Meldung (z.B.
+„Chunk 5 of 26 extracted …"), sodass man den Fortschritt auch innerhalb eines
+langen Dokuments sieht. Bei laufendem Import lädt die Seite sich alle 5 s selbst
+neu, ohne dass man ein MCP-Tool aufrufen muss. Jede Karte
 hat einen **Löschen**-Button, der den
 Projekt-Index nach Browser-Bestätigung entfernt (Quelldokumente bleiben) —
 serverseitig derselbe Weg wie das MCP-Tool `delete_project`. Der Viewer ist ein

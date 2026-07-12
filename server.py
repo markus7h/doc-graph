@@ -31,7 +31,7 @@ from graphview import color_for, graph_html, index_html
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.ollama import ollama_model_complete, ollama_embed
 from lightrag.utils import EmbeddingFunc
-from lightrag.kg.shared_storage import initialize_pipeline_status
+from lightrag.kg.shared_storage import initialize_pipeline_status, get_namespace_data
 
 # ----------------------------------------------------------------------------
 # Konfiguration
@@ -319,19 +319,31 @@ async def ingest_paperless(
     # Extraktion ist der teure Teil (viele LLM-Calls, ggf. Stunden). Im
     # Hintergrund + Dokument für Dokument, damit man echten Fortschritt (done/total)
     # sieht und ein Abbruch nur das laufende Dokument kostet (Manifest je Doc gespeichert).
+    async def _poll_msg(stop: asyncio.Event):
+        # Liest LightRAGs Live-Meldung (z.B. "Chunk 5 of 26 extracted ...") in den
+        # Status, damit man Fortschritt auch INNERHALB eines langen Dokuments sieht.
+        # ponytail: kooperatives asyncio -> läuft nie echt parallel zum Insert, kein Lock.
+        while not stop.is_set():
+            try:
+                ps = await get_namespace_data("pipeline_status")
+                st = _ingest_status.get(project)
+                if st and st.get("state") == "running":
+                    st["msg"] = str(ps.get("latest_message") or "")[:160]
+            except Exception:  # noqa: BLE001 — Status-Anzeige ist best effort
+                pass
+            await asyncio.sleep(3)
+
     async def _run():
         done = 0
+        stop = asyncio.Event()
+        poller = asyncio.create_task(_poll_msg(stop))
         try:
             for doc_key, text, h in pending:
                 await rag.ainsert([text], ids=[doc_key])
                 manifest[doc_key] = h
                 _save_manifest(project, manifest)
                 done += 1
-                _ingest_status[project] = {
-                    "state": "running", "done": done, "total": total,
-                    "new": new, "updated": updated, "skipped": skipped,
-                    "at": _now(), "_task": _ingest_status.get(project, {}).get("_task"),
-                }
+                _ingest_status[project]["done"] = done  # in-place: Poller-Feld bleibt
             _ingest_status[project] = {
                 "state": "done", "done": done, "total": total, "new": new,
                 "updated": updated, "skipped": skipped, "at": _now(),
@@ -341,6 +353,9 @@ async def ingest_paperless(
             _ingest_status[project] = {
                 "state": "error", "error": str(e), "done": done, "total": total, "at": _now(),
             }
+        finally:
+            stop.set()
+            poller.cancel()
 
     task = asyncio.create_task(_run())
     _ingest_status[project] = {
