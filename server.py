@@ -29,19 +29,33 @@ from mcp.server.fastmcp import FastMCP
 from graphview import color_for, graph_html, index_html
 
 from lightrag import LightRAG, QueryParam
-from lightrag.llm.ollama import ollama_model_complete, ollama_embed
+from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.utils import EmbeddingFunc
 from lightrag.kg.shared_storage import initialize_pipeline_status, get_namespace_data
 
 # ----------------------------------------------------------------------------
 # Konfiguration
 # ----------------------------------------------------------------------------
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+# llama-server (OpenAI-kompatibel). LLM und Embeddings sind getrennte Server/Ports
+# (llama-server = ein Modell pro Prozess). num_ctx entfällt — Kontext wird beim
+# llama-server-Start gesetzt (-c). api_key ist ein Dummy (llama-server prüft keinen).
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://localhost:11434/v1")
+EMBED_BASE_URL = os.environ.get("EMBED_BASE_URL", "http://localhost:11435/v1")
+LLM_API_KEY = os.environ.get("LLM_API_KEY", "sk-noauth")
 LLM_MODEL = os.environ.get("LLM_MODEL", "mistral-small3.2:24b")
-LLM_NUM_CTX = int(os.environ.get("LLM_NUM_CTX", "32768"))
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "bge-m3")
 EMBED_DIM = int(os.environ.get("EMBED_DIM", "1024"))
 MAX_ASYNC = int(os.environ.get("MAX_ASYNC", "2"))
+
+
+async def _llm_model_func(prompt, system_prompt=None, history_messages=None, **kwargs):
+    return await openai_complete_if_cache(
+        LLM_MODEL, prompt,
+        system_prompt=system_prompt,
+        history_messages=history_messages or [],
+        base_url=LLM_BASE_URL, api_key=LLM_API_KEY,
+        **kwargs,
+    )
 
 PAPERLESS_URL = os.environ.get("PAPERLESS_URL", "").rstrip("/")
 PAPERLESS_TOKEN = os.environ.get("PAPERLESS_TOKEN", "")
@@ -91,18 +105,15 @@ async def get_rag(project: str) -> LightRAG:
 
         rag = LightRAG(
             working_dir=str(working_dir),
-            llm_model_func=ollama_model_complete,
+            llm_model_func=_llm_model_func,
             llm_model_name=LLM_MODEL,
             llm_model_max_async=MAX_ASYNC,
-            llm_model_kwargs={
-                "host": OLLAMA_HOST,
-                "options": {"num_ctx": LLM_NUM_CTX},
-            },
             embedding_func=EmbeddingFunc(
                 embedding_dim=EMBED_DIM,
                 max_token_size=8192,
-                func=lambda texts: ollama_embed(
-                    texts, embed_model=EMBED_MODEL, host=OLLAMA_HOST
+                func=lambda texts: openai_embed(
+                    texts, model=EMBED_MODEL,
+                    base_url=EMBED_BASE_URL, api_key=LLM_API_KEY,
                 ),
             ),
         )
@@ -567,8 +578,8 @@ def _start_viewer_server() -> None:
 
 if __name__ == "__main__":
     log.info(
-        "doc-graph startet: Port=%s, LLM=%s@%s, Embed=%s(%s)",
-        MCP_PORT, LLM_MODEL, OLLAMA_HOST, EMBED_MODEL, EMBED_DIM,
+        "doc-graph startet: Port=%s, LLM=%s@%s, Embed=%s(%s)@%s",
+        MCP_PORT, LLM_MODEL, LLM_BASE_URL, EMBED_MODEL, EMBED_DIM, EMBED_BASE_URL,
     )
     _start_viewer_server()
     mcp.run(transport="streamable-http")

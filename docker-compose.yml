@@ -7,14 +7,14 @@ services:
       - "5775:5775"   # MCP (streamable HTTP)
       - "5776:5776"   # Graph-Viewer (statisches HTML)
     environment:
-      # --- LLM: geteiltes mistral auf paperless-ollama. ZWINGEND dasselbe Modell
-      # wie paperless-ai: 16 GB VRAM fassen kein zweites großes Modell neben dem
-      # gepinnten mistral (KEEP_ALIVE=-1) -> qwen3:14b daneben => OOM (Exit 137),
-      # empirisch bestätigt. Antworten liefert ohnehin Claude via only_context. ---
-      OLLAMA_HOST: ${OLLAMA_HOST:-http://paperless-ollama:11434}
+      # --- LLM: geteiltes mistral auf dem llama-server (OpenAI-kompatibel).
+      # ZWINGEND dasselbe Modell wie paperless-ai: 16 GB VRAM fassen kein zweites
+      # großes Modell neben dem dauergeladenen mistral. Antworten liefert ohnehin
+      # Claude via only_context. Kontext (num_ctx) wird server-seitig gesetzt (-c). ---
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://paperless-llama:11434/v1}
       LLM_MODEL: ${LLM_MODEL:-mistral-small3.2:24b}
-      LLM_NUM_CTX: ${LLM_NUM_CTX:-32768}   # konsistent mit paperless-ai/ai-rem
-      # --- Embeddings (bge-m3, wird ohnehin schon geteilt) ---
+      # --- Embeddings: eigener CPU-llama-server (bge-m3), separater Port ---
+      EMBED_BASE_URL: ${EMBED_BASE_URL:-http://paperless-llama-embed:11435/v1}
       EMBED_MODEL: ${EMBED_MODEL:-bge-m3}
       EMBED_DIM: ${EMBED_DIM:-1024}
       # --- Paperless-NGX (Dokumentquelle): via LAN-DNS 'paperless' erreichbar ---
@@ -33,8 +33,8 @@ services:
       # Pfad an myubuntu anpassen und einkommentieren; primäre Quelle ist Paperless.
       # - /home/markus/dokumente:/data/inputs:ro
     networks:
-      # Selbes Netz wie paperless-ollama + paperless-ai: löst 'paperless-ollama'
-      # (Ollama) und 'paperless' (NGX via LAN-DNS) auf — wie paperless-ai.
+      # Selbes Netz wie die llama-Server + paperless-ai: löst 'paperless-llama' /
+      # 'paperless-llama-embed' und 'paperless' (NGX via LAN-DNS) auf.
       - paperless-ai_default
 
 networks:

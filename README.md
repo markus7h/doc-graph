@@ -11,7 +11,7 @@ mitgelieferter Graph-Viewer macht den Graphen im Browser durchklickbar.
 ## Architektur
 
 ```
-Claude Code ──MCP (streamable HTTP :5775)──> doc-graph ──> Ollama (Extraktion + Embeddings)
+Claude Code ──MCP (streamable HTTP :5775)──> doc-graph ──> llama-server (Extraktion + Embeddings)
 Browser     ──HTTP  (Graph-Viewer   :5776)──> doc-graph ──> Paperless-NGX API (Dokumentquelle)
 
 doc-graph
@@ -28,14 +28,15 @@ MCP-Server stattdessen selbst eine lazy geladene LightRAG-Instanz pro
 
 ## Modell: geteiltes mistral-small3.2:24b
 
-Extraktion und Embeddings laufen über das **mit paperless-ai geteilte Ollama**
-(`paperless-ollama`). Genutzt wird `mistral-small3.2:24b` (Extraktion) + `bge-m3`
-(Embeddings, 1024-dim).
+Extraktion und Embeddings laufen über die **mit paperless-ai geteilten
+llama-server-Container**: Extraktion via `paperless-llama` (`mistral-small3.2:24b`,
+GPU) + Embeddings via `paperless-llama-embed` (`bge-m3`, CPU, 1024-dim).
 
-Warum geteilt statt eigenes Modell: Auf 16 GB VRAM hält paperless-ai mistral
-dauerhaft gepinnt (`OLLAMA_KEEP_ALIVE=-1`, `num_ctx=32768`, ~15 GB). Ein zweites
-großes Modell daneben führt zu OOM (empirisch: `qwen3:14b` → Exit 137). doc-graph
-nutzt daher dasselbe gepinnte mistral. Die eigentliche **Antwortformulierung
+Warum geteilt statt eigenes Modell: Auf ~16 GB VRAM (RTX 5080, geteilt mit dem
+Desktop) hält paperless-ai mistral dauerhaft im GPU-Speicher (`paperless-llama`,
+`-c 32768`, partial offload `-ngl 27`, ~12–13 GB). Ein zweites großes Modell
+daneben führt zu OOM (empirisch: `qwen3:14b` → Exit 137). doc-graph nutzt daher
+denselben llama-server. Die eigentliche **Antwortformulierung
 übernimmt ohnehin Claude** (via `only_context=True` liefert LightRAG nur die
 Roh-Chunks/Entitäten) — das lokale Modell ist nur für Extraktion und
 Kontext-Retrieval zuständig.
@@ -43,9 +44,10 @@ Kontext-Retrieval zuständig.
 ## Setup
 
 ```bash
-# Auf dem Ollama-Host (myubuntu/RTX 5080) — teilt sich Ollama mit paperless-ai:
-ollama pull mistral-small3.2:24b
-ollama pull bge-m3
+# Voraussetzung: die llama-server-Container von paperless-ai (paperless-llama,
+# paperless-llama-embed) laufen bereits auf demselben Host (myubuntu/RTX 5080) —
+# doc-graph nutzt sie mit, kein eigener Modell-Download nötig (GGUF wird beim
+# Start der paperless-ai-Container automatisch via `-hf` von Hugging Face geladen).
 
 # Im Run-Verzeichnis (/var/local/mydocker/doc-graph):
 cp .env.example .env   # PAPERLESS_TOKEN eintragen
@@ -53,9 +55,10 @@ docker compose up -d --build
 ```
 
 Das externe Docker-Netz `paperless-ai_default` verbindet doc-graph mit
-`paperless-ollama` (Ollama) und `paperless` (NGX via LAN-DNS) — dieselben
-Namen wie paperless-ai. Bei abweichendem Setup den Netzwerk-Block in
-`docker-compose.yml` anpassen oder `PAPERLESS_URL=http://<IP>:8010` verwenden.
+`paperless-llama` (mistral) und `paperless-llama-embed` (bge-m3) sowie
+`paperless` (NGX via LAN-DNS) — dieselben Namen wie paperless-ai. Bei
+abweichendem Setup den Netzwerk-Block in `docker-compose.yml` anpassen oder
+`PAPERLESS_URL=http://<IP>:8010` verwenden.
 
 ## Claude Code anbinden
 
