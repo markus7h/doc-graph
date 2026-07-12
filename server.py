@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import threading
+import time
 import urllib.parse
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
@@ -62,6 +63,10 @@ PROJECT_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,64}$")
 # ----------------------------------------------------------------------------
 _instances: dict[str, LightRAG] = {}
 _init_lock = asyncio.Lock()
+
+# Status laufender/letzter Ingests je Projekt (in-memory; ponytail: bei
+# Neustart weg -> nicht gespeicherter Manifest sorgt für Re-Ingest, unkritisch).
+_ingest_status: dict[str, dict] = {}
 
 
 def _validate_project(project: str) -> str:
@@ -128,6 +133,10 @@ def _save_manifest(project: str, manifest: dict) -> None:
 
 def _hash(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def _now() -> str:
+    return time.strftime("%Y-%m-%d %H:%M:%S")
 
 
 # ----------------------------------------------------------------------------
@@ -293,17 +302,54 @@ async def ingest_paperless(
             texts.append(text)
             ids.append(doc_key)
 
-    if texts:
-        # Batch-Insert; LightRAG übernimmt Chunking, Extraktion, Embedding.
-        # ids sorgen für Upsert-Verhalten bei geänderten Dokumenten.
-        await rag.ainsert(texts, ids=ids)
-        _save_manifest(project, manifest)
+    if not texts:
+        return (
+            f"Projekt '{project}': nichts zu tun ({skipped} unverändert). "
+            f"Gesamt im Index: {len(manifest)} Dokumente."
+        )
 
+    if _ingest_status.get(project, {}).get("state") == "running":
+        return (
+            f"Projekt '{project}': Ingest läuft bereits. "
+            f'Fortschritt: ingest_status(project="{project}").'
+        )
+
+    # Extraktion ist der teure Teil (viele LLM-Calls, ggf. Stunden). Im
+    # Hintergrund laufen lassen, damit der MCP-Call nicht ins Timeout rennt.
+    # Manifest erst nach Erfolg speichern -> Abbruch mitten drin => Re-Ingest.
+    async def _run():
+        try:
+            await rag.ainsert(texts, ids=ids)
+            _save_manifest(project, manifest)
+            _ingest_status[project] = {
+                "state": "done", "new": new, "updated": updated,
+                "skipped": skipped, "total": len(manifest), "at": _now(),
+            }
+        except Exception as e:  # noqa: BLE001 — Status festhalten, nicht crashen
+            log.exception("Ingest fehlgeschlagen für %s", project)
+            _ingest_status[project] = {"state": "error", "error": str(e), "at": _now()}
+
+    task = asyncio.create_task(_run())
+    _ingest_status[project] = {
+        "state": "running", "pending": len(texts), "new": new,
+        "updated": updated, "skipped": skipped, "at": _now(), "_task": task,
+    }
     return (
-        f"Projekt '{project}': {new} neu, {updated} aktualisiert, "
-        f"{skipped} unverändert übersprungen. "
-        f"Gesamt im Index: {len(manifest)} Dokumente."
+        f"Projekt '{project}': Ingest von {len(texts)} Dokumenten "
+        f"({new} neu, {updated} aktualisiert, {skipped} übersprungen) "
+        f"im Hintergrund gestartet — Extraktion läuft, das dauert. "
+        f'Fortschritt: ingest_status(project="{project}").'
     )
+
+
+@mcp.tool()
+async def ingest_status(project: str) -> str:
+    """Status des laufenden/letzten ingest_paperless-Laufs (läuft im Hintergrund)."""
+    project = _validate_project(project)
+    st = _ingest_status.get(project)
+    if not st:
+        return f"Projekt '{project}': kein Ingest bekannt (nichts gestartet oder Server neu gestartet)."
+    return json.dumps({k: v for k, v in st.items() if not k.startswith("_")}, ensure_ascii=False)
 
 
 @mcp.tool()

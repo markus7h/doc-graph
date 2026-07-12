@@ -120,7 +120,8 @@ stdlib-Fileserver (LAN-intern, kein Auth/HTTPS).
 | Tool | Zweck |
 |---|---|
 | `list_projects()` | Projekte + Dokumentzahl |
-| `ingest_paperless(project, tag/document_type/correspondent/query_text)` | Delta-Indexierung aus Paperless (Hash-Manifest, nur Neues/Geändertes) |
+| `ingest_paperless(project, tag/document_type/correspondent/query_text)` | Delta-Indexierung aus Paperless (Hash-Manifest, nur Neues/Geändertes) — Extraktion läuft im Hintergrund, das Tool kehrt sofort zurück |
+| `ingest_status(project)` | Fortschritt/Ergebnis des laufenden bzw. letzten Ingest-Laufs |
 | `ingest_directory(project, subpath)` | .txt/.md aus gemountetem Verzeichnis |
 | `query(project, question, mode, only_context)` | Abfrage: local / global / hybrid / mix / naive |
 | `get_entity(project, entity_name)` | Alle Fakten/Relationen zu einer Entität |
@@ -131,6 +132,11 @@ stdlib-Fileserver (LAN-intern, kein Auth/HTTPS).
 
 - **Indexierung ist der teure Teil:** ~150 Dokumente ≈ mehrere hundert
   LLM-Calls für die Extraktion. Danach nur Delta. Erstlauf am besten nachts starten.
+  Der teure Teil läuft **im Hintergrund**: `ingest_paperless` startet die Extraktion
+  und kehrt sofort zurück (sonst liefe der MCP-Call ins Timeout); Fortschritt/Ergebnis
+  liefert `ingest_status(project)` (`running`/`done`/`error`). Der Status liegt nur im
+  RAM — ein Container-Neustart mitten im Lauf verwirft ihn, das noch nicht gespeicherte
+  Manifest sorgt dann beim nächsten Ingest für sauberes Nachholen.
 - **Modellqualität = Graphqualität.** Wenn der Graph zu dünn wirkt
   (wenige Relationen), Extraktion mit größerem/anderem Modell wiederholen:
   `delete_project` + erneuter Ingest mit geändertem `LLM_MODEL`.
