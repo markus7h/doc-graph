@@ -508,10 +508,10 @@ def _get_project_name(project_id: str) -> str:
     return meta.get("project_name") or project_id
 
 
-async def _render_project_graphs(current_id: str | None = None) -> tuple[int, int]:
+def _render_project_graphs(current_id: str | None = None) -> tuple[int, int]:
     """Rendert alle Projekt-Graphen aus ihren .graphml-Dateien (keine LLM-Extraktion).
     Nutzt project_name aus Meta für Titel. Liefert (nodes, edges) für current_id,
-    oder (-1, -1) wenn current_id keinen Graph hat."""
+    oder (-1, -1) wenn current_id keinen Graph hat. SYNCHRON (kein asyncio)."""
     import networkx as nx
 
     projs = sorted(
@@ -563,7 +563,7 @@ async def graph_view(project_id: str) -> str:
     if not any((PROJECTS_DIR / project_id).glob("*.graphml")):
         return f"Kein Graph für '{project_id}' gefunden — erst ingest_paperless/ingest_directory ausführen."
 
-    n_nodes, n_edges = await _render_project_graphs(project_id)
+    n_nodes, n_edges = _render_project_graphs(project_id)
     url = f"http://{PUBLIC_HOST}:{VIEWER_PORT}/{project_id}/graph.html"
     return (f"Graph exportiert ({n_nodes} Entitäten, {n_edges} Beziehungen).\nÖffnen: {url}")
 
@@ -632,7 +632,11 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             for name in _ingest_status:
                 rendered.setdefault(name, False)
             items = sorted(rendered.items())
-            meta = {proj: _load_meta(proj) for proj in rendered}
+            # ponytail: Meta-Daten nur für sichtbare Projekte laden
+            meta = {}
+            for proj_id in rendered.keys():
+                if (PROJECTS_DIR / proj_id / "meta.json").exists():
+                    meta[proj_id] = _load_meta(proj_id)
             body = index_html(items, _ingest_status, meta).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -650,7 +654,7 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             project_id = (params.get("project_id") or [""])[0]
             try:
                 _validate_project(project_id)
-                asyncio.run(_render_project_graphs(project_id))
+                _render_project_graphs(project_id)
             except ValueError:
                 self.send_error(400, "invalid project_id")
                 return
