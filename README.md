@@ -54,6 +54,14 @@ cp .env.example .env   # PAPERLESS_TOKEN eintragen
 docker compose up -d --build
 ```
 
+**Updates deployen: immer `./deploy.sh`** (aus dem Git-Repo). Das Script
+kopiert die Code-/Build-Dateien ins Deploy-Verzeichnis, rebuildet den
+Container und verifiziert per md5, dass der Container wirklich mit dem
+deployten Code läuft. `docker-compose.yml` und `.env` werden bewusst nicht
+überschrieben (lokale Mounts/Secrets); Abweichungen zum Repo meldet das
+Script nur. Hintergrund: ein manuell vergessener Sync ließ am 2026-07-13
+einen Ingest mit zwei Commits altem Code (ohne qwen-Swap) laufen.
+
 Der Daten-Mount in `docker-compose.yml` ist ein **absoluter Pfad**
 (`/var/local/mydocker/doc-graph/data/projects`), bewusst kein `./data`: ein
 `docker compose up` aus dem Git-Repo (falsches CWD) würde sonst dessen leeres
