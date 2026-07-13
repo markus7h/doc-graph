@@ -168,22 +168,18 @@ Der Viewer ist ein stdlib-Fileserver (LAN-intern, kein Auth/HTTPS).
 - **Modellqualität = Graphqualität.** Wenn der Graph zu dünn wirkt
   (wenige Relationen), Extraktion mit größerem/anderem Modell wiederholen:
   `delete_project` + erneuter Ingest mit geändertem `LLM_MODEL`.
-- **Voll-GPU-Extraktion via qwen-Swap.** mistral-24b passt nur mit CPU-Offload
-  in die 16 GB (13/40 Layer im RAM → langsam, Extraktions-Timeouts). Da paperless-ai
-  selten läuft, teilt man die GPU **zeitlich**: qwen3-14b (Q5_K_M) läuft **voll auf
-  der GPU** unter demselben Netz-Alias `paperless-llama` (doc-graph merkt nichts),
-  mistral und paperless-ai pausieren solange. **Ein Kommando** erledigt den ganzen
-  Ablauf und swappt danach garantiert zurück (auch bei Fehler/Ctrl-C):
-
-  ```bash
-  # auf dem Docker-Host (myubuntu), im Deploy-Dir /var/local/mydocker/doc-graph
-  ./ingest-mit-qwen.sh <project_id> "tag=…"    # oder document_type=/correspondent=/query_text=
-  ```
-
-  Intern: `swap-to-qwen.sh` (mistral stoppen, paperless-ai pausieren, qwen laden)
-  → `ingest_paperless(...)` per MCP triggern → `ingest_status` bis `done` pollen
-  → `swap-to-mistral.sh`. Die drei Scripts lassen sich bei Bedarf auch einzeln
-  fahren. MCP-URL über `MCP_URL` überschreibbar (default `http://localhost:5775/mcp`).
+- **Voll-GPU-Extraktion via qwen-Swap — automatisch.** mistral-24b passt nur mit
+  CPU-Offload in die 16 GB (13/40 Layer im RAM → langsam, Extraktions-Timeouts).
+  Da paperless-ai selten läuft, teilt man die GPU **zeitlich**. Das passiert jetzt
+  **automatisch bei jedem Ingest**: sobald `ingest_paperless`/`ingest_directory`
+  Dokumente extrahiert, ruft der Server `swap-to-qwen.sh` (mistral stoppen,
+  paperless-ai pausieren, qwen3-14b Q5_K_M **voll auf die GPU** unter dem Netz-Alias
+  `paperless-llama`); nach Abschluss `swap-to-mistral.sh` (zurück auf mistral +
+  paperless-ai). Paralleler Ingest über mehrere Projekte swappt per Refcount nur
+  einmal rein/raus; ein Crash mitten im Ingest wird beim nächsten Serverstart
+  zurückgeswappt. Voraussetzung: `/var/run/docker.sock` ist in den doc-graph-
+  Container gemountet (compose) — root-äquivalent auf dem Host, bewusst, das Netz
+  ist intern. Abschaltbar via `INGEST_SWAP=0` (z. B. lokale Dev-Umgebung ohne Socket).
 - **Wöchentlicher Modell-Check:** `model_check.sh` (via cron) lässt einen
   Claude-Agenten read-only recherchieren, ob es ein besseres lokales LLM für die
   Extraktion gibt als das aktuelle mistral, und schreibt das Ergebnis nach

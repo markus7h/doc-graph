@@ -116,6 +116,48 @@ _init_lock = asyncio.Lock()
 # Neustart weg -> nicht gespeicherter Manifest sorgt für Re-Ingest, unkritisch).
 _ingest_status: dict[str, dict] = {}
 
+# ----------------------------------------------------------------------------
+# GPU-Swap: für die Dauer eines Ingests qwen3-14b VOLL auf die GPU, mistral +
+# paperless-ai pausieren (sonst nur Teil-GPU-Offload -> langsam/Timeouts).
+# swap-to-*.sh liegen im Image und steuern via gemountetem Docker-Socket die
+# llama-/paperless-ai-Container. Refcount unter Lock: paralleler Ingest über
+# mehrere Projekte swappt nur EINMAL rein/raus.
+# ponytail: globaler Lock reicht — Ingests laufen selten und selten parallel.
+# INGEST_SWAP=0 schaltet den Swap ab (lokale Dev-Umgebung ohne Docker-Socket).
+SWAP_ENABLED = os.environ.get("INGEST_SWAP", "1") == "1"
+_swap_lock = asyncio.Lock()
+_active_ingests = 0
+
+def _run_swap(script: str) -> None:
+    p = Path(__file__).parent / script
+    r = subprocess.run(["bash", str(p)], capture_output=True, text=True, timeout=1500)
+    if r.returncode != 0:
+        log.error("%s fehlgeschlagen (rc=%s): %s", script, r.returncode, (r.stderr or r.stdout)[-800:])
+        raise RuntimeError(f"{script} rc={r.returncode}")
+    log.info("GPU-Swap: %s ok", script)
+
+async def _swap_begin() -> None:
+    """Vor dem ersten parallelen Ingest zu qwen swappen (blockt bis qwen bereit)."""
+    global _active_ingests
+    if not SWAP_ENABLED:
+        return
+    async with _swap_lock:
+        _active_ingests += 1
+        if _active_ingests == 1:
+            log.info("GPU-Swap: qwen laden, paperless-ai pausieren…")
+            await asyncio.to_thread(_run_swap, "swap-to-qwen.sh")
+
+async def _swap_end() -> None:
+    """Nach dem letzten laufenden Ingest zurück zu mistral + paperless-ai."""
+    global _active_ingests
+    if not SWAP_ENABLED:
+        return
+    async with _swap_lock:
+        _active_ingests = max(0, _active_ingests - 1)
+        if _active_ingests == 0:
+            log.info("GPU-Swap: zurück auf mistral, paperless-ai fortsetzen…")
+            await asyncio.to_thread(_run_swap, "swap-to-mistral.sh")
+
 
 # ponytail: Meta-Datei pro Projekt (project_name, etc.), analog Manifest-Pattern
 def _meta_path(project_id: str) -> Path:
@@ -420,6 +462,10 @@ async def ingest_paperless(
         stop = asyncio.Event()
         poller = asyncio.create_task(_poll_msg(stop))
         try:
+            # Swap läuft im Hintergrund-Task (nicht im MCP-Handler) -> kein
+            # MCP-Timeout, während qwen lädt. Bei Swap-Fehler bricht der Ingest
+            # kontrolliert ab; das finally swappt zurück.
+            await _swap_begin()
             for doc_key, text, h in pending:
                 await rag.ainsert([text], ids=[doc_key])
                 manifest[doc_key] = h
@@ -438,6 +484,7 @@ async def ingest_paperless(
         finally:
             stop.set()
             poller.cancel()
+            await _swap_end()
 
     task = asyncio.create_task(_run())
     _ingest_status[project_id] = {
@@ -528,8 +575,15 @@ async def ingest_directory(project_id: str, subpath: str = "") -> str:
         new += 1
 
     if texts:
-        await rag.ainsert(texts, ids=ids)
-        _save_manifest(project_id, manifest)
+        # ponytail: synchron -> der MCP-Call blockt, während qwen lädt (~min).
+        # ingest_directory ist Nebenpfad (primär Paperless); falls störend, wie
+        # ingest_paperless in einen Hintergrund-Task ziehen.
+        await _swap_begin()
+        try:
+            await rag.ainsert(texts, ids=ids)
+            _save_manifest(project_id, manifest)
+        finally:
+            await _swap_end()
 
     return (
         f"Projekt '{project_id}': {new} Dateien indexiert, {skipped} unverändert, "
@@ -768,4 +822,20 @@ if __name__ == "__main__":
         MCP_PORT, LLM_MODEL, LLM_BASE_URL, EMBED_MODEL, EMBED_DIM, EMBED_BASE_URL,
     )
     _start_viewer_server()
+
+    # Safety-Net: hat ein Crash mitten im Ingest qwen geladen gelassen (finally
+    # lief nicht), bliebe paperless-ai dauerhaft pausiert. Beim Start prüfen und
+    # zurückswappen. ponytail: rechtfertigt sich, weil sonst paperless-ai hängt.
+    if SWAP_ENABLED:
+        try:
+            r = subprocess.run(
+                ["docker", "ps", "-q", "-f", "name=paperless-llama-qwen"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if r.stdout.strip():
+                log.warning("qwen-Container aus früherem Ingest aktiv — swappe zurück auf mistral")
+                _run_swap("swap-to-mistral.sh")
+        except Exception:  # noqa: BLE001 — best effort, Start nicht blockieren
+            log.exception("Startup-Swap-Cleanup fehlgeschlagen")
+
     mcp.run(transport="streamable-http")

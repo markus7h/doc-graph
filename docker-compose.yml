@@ -38,6 +38,10 @@ services:
       # Pfad an den Host anpassen und einkommentieren (Verzeichnis muss existieren,
       # sonst legt Docker es leer als root an); primäre Quelle bleibt Paperless.
       # - /home/markus/dokumente:/data/inputs:ro
+      # GPU-Swap: server.py steuert per swap-to-*.sh die llama-/paperless-ai-
+      # Container (qwen rein/mistral raus) während eines Ingests. Root-äquiv. auf
+      # dem Host — bewusst, das Netz ist intern. Abschaltbar via INGEST_SWAP=0.
+      - /var/run/docker.sock:/var/run/docker.sock
     networks:
       # Selbes Netz wie die llama-Server + paperless-ai: löst 'paperless-llama' /
       # 'paperless-llama-embed' und 'paperless' (NGX via LAN-DNS) auf.
