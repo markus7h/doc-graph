@@ -282,6 +282,10 @@ def _paperless_client() -> httpx.AsyncClient:
         # ponytail: LAN-interne NGX mit self-signed Cert -> kein Verify.
         # Nur im vertrauenswürdigen Netz vertretbar.
         verify=False,
+        # Paperless liefert die Paginierungs-'next'-URL absolut als http://,
+        # der Proxy antwortet darauf mit 308 -> https. Ohne Folgen des Redirects
+        # bricht der Ingest ab Seite 2 ab (0 Docs bei >50 Treffern).
+        follow_redirects=True,
     )
 
 
