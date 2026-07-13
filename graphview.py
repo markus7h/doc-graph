@@ -48,29 +48,36 @@ def _status_badge(st: dict) -> str:
     return ""
 
 
-def index_html(items: list[tuple[str, bool]], status: dict | None = None) -> str:
-    """Landing-Page für den Viewer-Root. items = (projekt, hat_graph_html).
-    status = {projekt: ingest_status_dict} — zeigt Import-Fortschritt pro Karte.
+def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: dict | None = None) -> str:
+    """Landing-Page für den Viewer-Root. items = (projekt_id, hat_graph_html).
+    status = {projekt_id: ingest_status_dict} — zeigt Import-Fortschritt pro Karte.
+    meta = {projekt_id: {"project_name": "..."}} — Anzeigenamen.
     Erklärt, was zu sehen ist und wie es weitergeht (statt rohem Dir-Listing)."""
     status = status or {}
+    meta = meta or {}
     running = any(s.get("state") == "running" for s in status.values())
 
     def _row(p: str, has: bool) -> str:
         e = _esc(p)
+        m = meta.get(p, {})
+        display_name = m.get("project_name") or p
         badge = _status_badge(status.get(p, {}))
-        left = (f'<a class="nm open" href="./{e}/graph.html">{e}'
+        left = (f'<a class="nm open" href="./{e}/graph.html">{_esc(display_name)}'
                 '<span class="go"> · Graph öffnen →</span></a>' if has else
-                f'<span class="nm">{e}</span>'
-                f'<span class="hint">noch nicht gerendert — <code>graph_view("{e}")'
-                "</code> aufrufen</span>") + badge
-        # confirm im Browser (Viewer hat kein Auth) — Löschen entfernt nur den Index
-        form = (f'<form method="post" action="/delete" class="del" '
-                f"onsubmit=\"return confirm('Projekt &quot;{e}&quot; löschen? "
-                "Der Index wird entfernt, die Quelldokumente bleiben.')\">"
-                f'<input type="hidden" name="project" value="{e}">'
-                '<button title="Projekt-Index löschen">Löschen</button></form>')
+                f'<span class="nm">{_esc(display_name)}</span>'
+                f'<span class="hint">noch nicht gerendert</span>') + badge
+        # Buttons: Erstellen/Aktualisieren (POST /refresh) + Löschen
+        refresh_form = (f'<form method="post" action="/refresh" class="del" style="margin-right:6px">'
+                       f'<input type="hidden" name="project_id" value="{e}">'
+                       f'<button title="{"Graph aktualisieren" if has else "Graph erstellen"}">{"Aktualisieren" if has else "Erstellen"}</button></form>')
+        delete_form = (f'<form method="post" action="/delete" class="del" '
+                      f"onsubmit=\"return confirm('Projekt &quot;{e}&quot; löschen? "
+                      "Der Index wird entfernt, die Quelldokumente bleiben.')\">"
+                      f'<input type="hidden" name="project_id" value="{e}">'
+                      '<button title="Projekt-Index löschen">Löschen</button></form>')
+        forms = refresh_form + delete_form
         cls = "card" if has else "card todo"
-        return f'<div class="{cls}"><div class="left">{left}</div>{form}</div>'
+        return f'<div class="{cls}"><div class="left">{left}</div><div style="display:flex;gap:6px">{forms}</div></div>'
 
     if items:
         rows = "\n".join(_row(p, has) for p, has in items)
@@ -107,9 +114,9 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None) -> str
   .badge.run{{background:#fff8e1;color:#8a6d00;border:1px solid #ffe082}}
   .badge.done{{background:#edf7ee;color:var(--ah);border:1px solid #c8e6c9}}
   .badge.err{{background:#fff5f5;color:#c62828;border:1px solid #ffcdd2}}
-  .del button{{background:none;border:1px solid var(--border);color:var(--muted);
-    border-radius:6px;padding:5px 11px;font-size:12px;cursor:pointer;white-space:nowrap;transition:all .15s}}
-  .del button:hover{{border-color:#dd3333;color:#dd3333;background:#fff5f5}}
+  .del, .del button{{background:none;border:1px solid var(--border);color:var(--muted);
+    border-radius:6px;padding:5px 11px;font-size:12px;cursor:pointer;white-space:nowrap;transition:all .15s;margin:0;display:inline-block}}
+  .del:hover, .del button:hover{{border-color:#dd3333;color:#dd3333;background:#fff5f5}}
   code{{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:1px 5px}}
   .steps{{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px 22px;font-size:13px;line-height:1.7}}
   .steps ol{{margin:8px 0 0 18px}}
@@ -132,13 +139,15 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None) -> str
 </body></html>"""
 
 
-def _project_select(projects: list[str] | None, current: str) -> str:
+def _project_select(projects: list[str] | None, current: str, names: dict[str, str] | None = None) -> str:
     """Dropdown zum Umschalten zwischen Projekt-Graphen (navigiert zur graph.html
-    des gewählten Projekts). Leer, wenn nur ein/kein Projekt vorliegt."""
+    des gewählten Projekts). Leer, wenn nur ein/kein Projekt vorliegt.
+    names = {project_id: display_name} für schönere Labels."""
     if not projects or len(projects) < 2:
         return ""
+    names = names or {}
     opts = "".join(
-        f'<option value="{p}"{" selected" if p == current else ""}>{p}</option>'
+        f'<option value="{p}"{" selected" if p == current else ""}>{_esc(names.get(p) or p)}</option>'
         for p in projects
     )
     return ('<label class="muted">Projekt '
@@ -147,11 +156,12 @@ def _project_select(projects: list[str] | None, current: str) -> str:
 
 
 def graph_html(nodes: list[dict], edges: list[dict], title: str,
-               projects: list[str] | None = None, current: str = "") -> str:
-    """Baut aus Knoten/Kanten-Dicts ein eigenständiges vis-network-HTML."""
+               projects: list[str] | None = None, current: str = "", names: dict[str, str] | None = None) -> str:
+    """Baut aus Knoten/Kanten-Dicts ein eigenständiges vis-network-HTML.
+    names = {project_id: display_name} für Dropdown und Refresh-Button."""
     # json.dumps escaped '<' nicht; </script> in Daten würde das Script sprengen.
     payload = json.dumps({"nodes": nodes, "edges": edges}).replace("<", "\\u003c")
-    proj_select = _project_select(projects, current)
+    proj_select = _project_select(projects, current, names)
     return f"""<!doctype html>
 <html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -185,6 +195,10 @@ def graph_html(nodes: list[dict], edges: list[dict], title: str,
 <p class="sub"><span id="cnt">lädt…</span> &nbsp;·&nbsp; ziehen/scrollen zum Navigieren, Knoten/Kante anklicken für Details, Legende anklicken zum Filtern</p>
 <div class="bar">
   {proj_select}
+  <form method="post" action="../refresh" style="margin:0;display:inline">
+    <input type="hidden" name="project_id" value="{current}">
+    <button type="submit" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:5px 11px;font-size:12px;cursor:pointer;white-space:nowrap;transition:all .15s" title="Graph aus .graphml neu rendern">Aktualisieren</button>
+  </form>
   <label class="muted"><input type="checkbox" id="phys" checked onchange="net&&net.setOptions({{physics:{{enabled:this.checked}}}})"> Physik</label>
   <span class="muted">Typ-Filter: Legende anklicken</span>
 </div>

@@ -36,7 +36,7 @@ docker run -d --name paperless-llama-qwen \
 
 echo "     warte auf qwen (erster Lauf lädt ~10.5 GB GGUF, kann dauern)..."
 for _ in $(seq 1 240); do   # bis 20 min
-  if docker logs paperless-llama-qwen 2>&1 | grep -q "server is listening"; then
+  if docker logs paperless-llama-qwen 2>&1 | grep -q "listening on http"; then
     echo "     qwen bereit. Jetzt ingest_paperless(...) triggern, dann ./swap-to-mistral.sh"
     exit 0
   fi

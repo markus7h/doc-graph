@@ -77,7 +77,7 @@ danach von allen Clients gleichermaßen nutzbar.
 
 ## Graph-Viewer
 
-`graph_view(project)` rendert den Graphen als interaktive HTML-Ansicht
+`graph_view(project_id)` rendert den Graphen als interaktive HTML-Ansicht
 (vis-network, Optik an den ai-rem-Graphen angelehnt: heller Hintergrund,
 grüner Akzent): Knoten = Entitäten (gefärbt nach Typ), Kanten = Beziehungen.
 Details (Beschreibung) erscheinen per Klick auf Knoten/Kante in einem
@@ -86,63 +86,70 @@ mehrzeiligen Panel. Bedienung:
 - **Typ-Filter:** Legende unten anklicken blendet Entitätstypen aus/ein.
 - **Physik:** Checkbox schaltet das Force-Layout an/aus.
 - **Projekt-Umschalter:** Dropdown oben wechselt zur `graph.html` eines anderen
-  Projekts (erscheint ab zwei indexierten Projekten). Jeder `graph_view`-Aufruf
-  rendert alle Projektseiten neu, damit die Umschalter überall konsistent sind.
+  Projekts (erscheint ab zwei indexierten Projekten, zeigt optional den Anzeigenamen).
+- **Aktualisieren-Button:** Rendert die graph.html aus dem vorhandenen `.graphml` neu
+  (keine LLM-Extraktion, schnell). Nötig z.B. nach `rename_project`.
 
 Das Tool gibt die URL zurück:
 
 ```
-http://myubuntu:5776/<projekt>/graph.html
+http://myubuntu:5776/<project_id>/graph.html
 ```
 
 Der Viewer-Root (`http://myubuntu:5776/`) zeigt eine Landing-Page: alle
-indexierten Projekte als Karten (Klick öffnet den Graphen) plus eine Kurz-
-anleitung, wie es weitergeht. Läuft gerade ein `ingest_paperless`, trägt die
-betroffene Karte ein **Import-Status-Badge** (⏳ läuft `done/total` / ✓ zuletzt
-indexiert / ✗ Fehler). Dokumente werden einzeln extrahiert (Zähler pro fertigem
-Dokument); zusätzlich zeigt das Badge LightRAGs aktuelle Live-Meldung (z.B.
-„Chunk 5 of 26 extracted …"), sodass man den Fortschritt auch innerhalb eines
-langen Dokuments sieht. Bei laufendem Import lädt die Seite sich alle 5 s selbst
-neu, ohne dass man ein MCP-Tool aufrufen muss. Jede Karte
-hat einen **Löschen**-Button, der den
-Projekt-Index nach Browser-Bestätigung entfernt (Quelldokumente bleiben) —
-serverseitig derselbe Weg wie das MCP-Tool `delete_project`. Der Viewer ist ein
-stdlib-Fileserver (LAN-intern, kein Auth/HTTPS).
+indexierten Projekte als Karten mit ihrem Anzeigenamen (falls gesetzt). Klick öffnet
+den Graphen. Läuft gerade ein `ingest_paperless`, trägt die betroffene Karte ein
+**Import-Status-Badge** (⏳ läuft `done/total` / ✓ zuletzt indexiert / ✗ Fehler).
+Dokumente werden einzeln extrahiert (Zähler pro fertigem Dokument); zusätzlich zeigt das
+Badge LightRAGs aktuelle Live-Meldung (z.B. „Chunk 5 of 26 extracted …"), sodass man
+den Fortschritt auch innerhalb eines langen Dokuments sieht. Bei laufendem Import lädt
+die Seite sich alle 5 s selbst neu, ohne dass man ein MCP-Tool aufrufen muss. Jede Karte hat zwei Buttons:
+
+- **Erstellen/Aktualisieren:** Rendert den Graphen aus `.graphml` (POST `/refresh`).
+- **Löschen:** Entfernt den Projekt-Index nach Browser-Bestätigung (Quelldokumente
+  bleiben) — serverseitig derselbe Weg wie das MCP-Tool `delete_project`.
+
+Der Viewer ist ein stdlib-Fileserver (LAN-intern, kein Auth/HTTPS).
 
 ## Typischer Workflow
 
 ```
 1. Indexieren (einmalig / bei neuen Dokumenten):
-   ingest_paperless(project="fehmarn", tag="Teilungsversteigerung")
+   ingest_paperless(project_id="fehmarn", tag="Teilungsversteigerung")
 
-2. Abfragen:
-   query(project="fehmarn",
+2. Optional: Anzeigenamen setzen (project_id bleibt unverändert):
+   rename_project(project_id="fehmarn", project_name="Teilung Eckernförde")
+
+3. Abfragen:
+   query(project_id="fehmarn",
          question="Welche Fristen wurden vom AG Oldenburg gesetzt und welche laufen noch?")
 
-   query(project="fehmarn",
+   query(project_id="fehmarn",
          question="Chronologie aller Schreiben zur Grundschuld",
          mode="global")
 
-3. query liefert per Default nur den Kontext (Roh-Chunks + Entitäten),
+4. query liefert per Default nur den Kontext (Roh-Chunks + Entitäten),
    Claude formuliert selbst. Lokale LLM-Formulierung nur bewusst:
    query(..., only_context=False)  → langsam auf geteilter GPU
 
-4. Visuell verstehen:
-   graph_view(project="fehmarn")   → URL im Browser öffnen
+5. Visuell verstehen:
+   graph_view(project_id="fehmarn")   → URL im Browser öffnen
+   (Viewer zeigt den Anzeigenamen im Titel und Dropdown)
 ```
 
 ### Tools
 
 | Tool | Zweck |
 |---|---|
-| `list_projects()` | Projekte + Dokumentzahl |
-| `ingest_paperless(project, tag/document_type/correspondent/query_text)` | Delta-Indexierung aus Paperless (Hash-Manifest, nur Neues/Geändertes) — Extraktion läuft im Hintergrund, das Tool kehrt sofort zurück |
-| `ingest_status(project)` | Fortschritt/Ergebnis des laufenden bzw. letzten Ingest-Laufs |
-| `ingest_directory(project, subpath)` | .txt/.md aus gemountetem Verzeichnis |
-| `query(project, question, mode, only_context, max_total_tokens)` | Abfrage: local / global / hybrid / mix / naive. `only_context` ist **default True** (Claude formuliert aus dem Kontext); die lokale LLM-Formulierung ist auf geteilter GPU zu langsam. `max_total_tokens` (default 12000) deckelt den Kontext, damit er das MCP-Token-Limit nicht sprengt |
-| `get_entity(project, entity_name)` | Alle Fakten/Relationen zu einer Entität |
-| `graph_view(project)` | Interaktive HTML-Graphansicht, gibt Viewer-URL zurück |
-| `delete_project(project, confirm)` | Index löschen (Quellen bleiben) |
+| `list_projects()` | Projekte + Dokumentzahl (zeigt project_id, optional Anzeigename in Klammern) |
+| `ingest_paperless(project_id, tag/document_type/correspondent/query_text)` | Delta-Indexierung aus Paperless (Hash-Manifest, nur Neues/Geändertes) — Extraktion läuft im Hintergrund, das Tool kehrt sofort zurück |
+| `ingest_status(project_id)` | Fortschritt/Ergebnis des laufenden bzw. letzten Ingest-Laufs |
+| `ingest_directory(project_id, subpath)` | .txt/.md aus gemountetem Verzeichnis |
+| `query(project_id, question, mode, only_context, max_total_tokens)` | Abfrage: local / global / hybrid / mix / naive. `only_context` ist **default True** (Claude formuliert aus dem Kontext); die lokale LLM-Formulierung ist auf geteilter GPU zu langsam. `max_total_tokens` (default 12000) deckelt den Kontext, damit er das MCP-Token-Limit nicht sprengt |
+| `get_entity(project_id, entity_name)` | Alle Fakten/Relationen zu einer Entität |
+| `graph_view(project_id)` | Interaktive HTML-Graphansicht, gibt Viewer-URL zurück |
+| `rename_project(project_id, project_name)` | Setzt den Anzeigenamen (display name) eines Projekts; der technische project_id bleibt unverändert |
+| `delete_project(project_id, confirm)` | Index löschen (Quellen bleiben) |
 
 ## Betriebshinweise
 

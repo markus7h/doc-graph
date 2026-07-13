@@ -110,6 +110,22 @@ _init_lock = asyncio.Lock()
 _ingest_status: dict[str, dict] = {}
 
 
+# ponytail: Meta-Datei pro Projekt (project_name, etc.), analog Manifest-Pattern
+def _meta_path(project_id: str) -> Path:
+    return PROJECTS_DIR / project_id / "meta.json"
+
+
+def _load_meta(project_id: str) -> dict:
+    p = _meta_path(project_id)
+    if p.exists():
+        return json.loads(p.read_text())
+    return {}
+
+
+def _save_meta(project_id: str, meta: dict) -> None:
+    _meta_path(project_id).write_text(json.dumps(meta, indent=1, ensure_ascii=False))
+
+
 def _validate_project(project: str) -> str:
     if not PROJECT_RE.match(project):
         raise ValueError(
@@ -242,13 +258,16 @@ async def list_projects() -> str:
     for d in sorted(PROJECTS_DIR.iterdir()):
         if d.is_dir():
             manifest = _load_manifest(d.name)
-            lines.append(f"- {d.name}: {len(manifest)} Dokumente indexiert")
+            meta = _load_meta(d.name)
+            name = meta.get("project_name") or d.name
+            label = f"{d.name} ({name})" if meta.get("project_name") else d.name
+            lines.append(f"- {label}: {len(manifest)} Dokumente indexiert")
     return "\n".join(lines) or "Keine Projekte vorhanden."
 
 
 @mcp.tool()
 async def query(
-    project: str,
+    project_id: str,
     question: str,
     mode: str = "hybrid",
     only_context: bool = True,
@@ -257,7 +276,7 @@ async def query(
     """Fragt den Knowledge Graph eines Projekts ab.
 
     Args:
-        project: Projektname (siehe list_projects).
+        project_id: technischer Projekt-Schlüssel (siehe list_projects), stabil — NICHT der Anzeigename.
         question: Frage in natürlicher Sprache (Deutsch ok).
         mode: 'local' (entitätsnah), 'global' (übergreifende Muster),
               'hybrid' (Standard), 'mix' (KG + Vektor), 'naive' (nur Vektor).
@@ -269,7 +288,7 @@ async def query(
               only_context-Dump, damit er das MCP-Token-Limit nicht sprengt
               (Issue #2). Höher setzen für breitere Aggregationsfragen.
     """
-    rag = await get_rag(project)
+    rag = await get_rag(project_id)
     param = QueryParam(
         mode=mode, only_need_context=only_context,
         max_total_tokens=max_total_tokens,
@@ -280,7 +299,7 @@ async def query(
 
 @mcp.tool()
 async def ingest_paperless(
-    project: str,
+    project_id: str,
     tag: str = "",
     document_type: str = "",
     correspondent: str = "",
@@ -292,7 +311,7 @@ async def ingest_paperless(
     muss gesetzt sein.
 
     Args:
-        project: Zielprojekt (wird bei Bedarf angelegt).
+        project_id: technischer Projekt-Schlüssel (wird bei Bedarf angelegt).
         tag: Paperless-Tag-Name (exakt, case-insensitive).
         document_type: Dokumenttyp-Name.
         correspondent: Korrespondent-Name.
@@ -310,8 +329,8 @@ async def ingest_paperless(
     if len(params) == 1:
         return "Fehler: mindestens einen Filter angeben (tag/document_type/correspondent/query_text)."
 
-    rag = await get_rag(project)
-    manifest = _load_manifest(project)
+    rag = await get_rag(project_id)
+    manifest = _load_manifest(project_id)
 
     new, updated, skipped, pending = 0, 0, 0, []  # pending: (doc_key, text, hash)
 
@@ -349,14 +368,14 @@ async def ingest_paperless(
 
     if not pending:
         return (
-            f"Projekt '{project}': nichts zu tun ({skipped} unverändert). "
+            f"Projekt '{project_id}': nichts zu tun ({skipped} unverändert). "
             f"Gesamt im Index: {len(manifest)} Dokumente."
         )
 
-    if _ingest_status.get(project, {}).get("state") == "running":
+    if _ingest_status.get(project_id, {}).get("state") == "running":
         return (
-            f"Projekt '{project}': Ingest läuft bereits. "
-            f'Fortschritt: ingest_status(project="{project}").'
+            f"Projekt '{project_id}': Ingest läuft bereits. "
+            f'Fortschritt: ingest_status(project_id="{project_id}").'
         )
 
     total = len(pending)
@@ -371,7 +390,7 @@ async def ingest_paperless(
         while not stop.is_set():
             try:
                 ps = await get_namespace_data("pipeline_status")
-                st = _ingest_status.get(project)
+                st = _ingest_status.get(project_id)
                 if st and st.get("state") == "running":
                     st["msg"] = str(ps.get("latest_message") or "")[:160]
             except Exception:  # noqa: BLE001 — Status-Anzeige ist best effort
@@ -386,16 +405,16 @@ async def ingest_paperless(
             for doc_key, text, h in pending:
                 await rag.ainsert([text], ids=[doc_key])
                 manifest[doc_key] = h
-                _save_manifest(project, manifest)
+                _save_manifest(project_id, manifest)
                 done += 1
-                _ingest_status[project]["done"] = done  # in-place: Poller-Feld bleibt
-            _ingest_status[project] = {
+                _ingest_status[project_id]["done"] = done  # in-place: Poller-Feld bleibt
+            _ingest_status[project_id] = {
                 "state": "done", "done": done, "total": total, "new": new,
                 "updated": updated, "skipped": skipped, "at": _now(),
             }
         except Exception as e:  # noqa: BLE001 — Status festhalten, nicht crashen
-            log.exception("Ingest fehlgeschlagen für %s", project)
-            _ingest_status[project] = {
+            log.exception("Ingest fehlgeschlagen für %s", project_id)
+            _ingest_status[project_id] = {
                 "state": "error", "error": str(e), "done": done, "total": total, "at": _now(),
             }
         finally:
@@ -403,35 +422,35 @@ async def ingest_paperless(
             poller.cancel()
 
     task = asyncio.create_task(_run())
-    _ingest_status[project] = {
+    _ingest_status[project_id] = {
         "state": "running", "done": 0, "total": total, "new": new,
         "updated": updated, "skipped": skipped, "at": _now(), "_task": task,
     }
     return (
-        f"Projekt '{project}': Ingest von {total} Dokumenten "
+        f"Projekt '{project_id}': Ingest von {total} Dokumenten "
         f"({new} neu, {updated} aktualisiert, {skipped} übersprungen) "
         f"im Hintergrund gestartet — Extraktion läuft, das dauert. "
-        f'Fortschritt: ingest_status(project="{project}").'
+        f'Fortschritt: ingest_status(project_id="{project_id}").'
     )
 
 
 @mcp.tool()
-async def ingest_status(project: str) -> str:
+async def ingest_status(project_id: str) -> str:
     """Status des laufenden/letzten ingest_paperless-Laufs (läuft im Hintergrund)."""
-    project = _validate_project(project)
-    st = _ingest_status.get(project)
+    project_id = _validate_project(project_id)
+    st = _ingest_status.get(project_id)
     if not st:
-        return f"Projekt '{project}': kein Ingest bekannt (nichts gestartet oder Server neu gestartet)."
+        return f"Projekt '{project_id}': kein Ingest bekannt (nichts gestartet oder Server neu gestartet)."
     return json.dumps({k: v for k, v in st.items() if not k.startswith("_")}, ensure_ascii=False)
 
 
 @mcp.tool()
-async def ingest_directory(project: str, subpath: str = "") -> str:
+async def ingest_directory(project_id: str, subpath: str = "") -> str:
     """Indexiert lokale Textdateien (.txt, .md) aus /data/inputs/<subpath>
     in den Knowledge Graph. Für PDFs Paperless als Quelle nutzen (OCR fertig).
 
     Args:
-        project: Zielprojekt.
+        project_id: technischer Projekt-Schlüssel.
         subpath: Unterverzeichnis relativ zum gemounteten inputs-Volume.
     """
     base = (INPUTS_DIR / subpath).resolve()
@@ -440,8 +459,8 @@ async def ingest_directory(project: str, subpath: str = "") -> str:
     if not base.exists():
         return f"Fehler: {base} existiert nicht."
 
-    rag = await get_rag(project)
-    manifest = _load_manifest(project)
+    rag = await get_rag(project_id)
+    manifest = _load_manifest(project_id)
     new, skipped, texts, ids = 0, 0, [], []
 
     for f in sorted(base.rglob("*")):
@@ -460,16 +479,21 @@ async def ingest_directory(project: str, subpath: str = "") -> str:
 
     if texts:
         await rag.ainsert(texts, ids=ids)
-        _save_manifest(project, manifest)
+        _save_manifest(project_id, manifest)
 
-    return f"Projekt '{project}': {new} Dateien indexiert, {skipped} unverändert."
+    return f"Projekt '{project_id}': {new} Dateien indexiert, {skipped} unverändert."
 
 
 @mcp.tool()
-async def get_entity(project: str, entity_name: str) -> str:
+async def get_entity(project_id: str, entity_name: str) -> str:
     """Liefert Details und Beziehungen zu einer Entität im Graph
-    (z. B. Person, Grundstück, Aktenzeichen)."""
-    rag = await get_rag(project)
+    (z. B. Person, Grundstück, Aktenzeichen).
+
+    Args:
+        project_id: technischer Projekt-Schlüssel (siehe list_projects).
+        entity_name: Name der Entität.
+    """
+    rag = await get_rag(project_id)
     result = await rag.aquery(
         f"Nenne alle bekannten Fakten und Beziehungen zur Entität '{entity_name}', "
         f"chronologisch geordnet, mit Quellenbezug.",
@@ -478,31 +502,26 @@ async def get_entity(project: str, entity_name: str) -> str:
     return str(result)
 
 
-@mcp.tool()
-async def graph_view(project: str) -> str:
-    """Erzeugt eine interaktive HTML-Ansicht des Knowledge Graphs zum Durchklicken
-    (Knoten = Entitäten, gefärbt nach Typ; Kanten = Beziehungen). Details erscheinen
-    per Klick in einem Panel am unteren Rand. Gibt die URL zurück, die im Browser zu öffnen ist.
+def _get_project_name(project_id: str) -> str:
+    """Liefert display_name (Fallback: project_id)."""
+    meta = _load_meta(project_id)
+    return meta.get("project_name") or project_id
 
-    Args:
-        project: Projektname (siehe list_projects).
-    """
-    import networkx as nx  # via lightrag-hku installiert (NetworkX-Graphstore)
 
-    project = _validate_project(project)
+async def _render_project_graphs(current_id: str | None = None) -> tuple[int, int]:
+    """Rendert alle Projekt-Graphen aus ihren .graphml-Dateien (keine LLM-Extraktion).
+    Nutzt project_name aus Meta für Titel. Liefert (nodes, edges) für current_id,
+    oder (-1, -1) wenn current_id keinen Graph hat."""
+    import networkx as nx
 
-    # Alle Projekte mit Graph — für das Umschalt-Dropdown; jede Seite wird neu
-    # gerendert, damit die Dropdowns projektübergreifend konsistent sind.
-    # ponytail: alle Projekte je Aufruf rendern; on-demand-Route erst nötig, wenn die Projektzahl groß wird.
     projs = sorted(
         p.name for p in PROJECTS_DIR.iterdir()
         if p.is_dir() and any(p.glob("*.graphml"))
     )
-    if project not in projs:
-        return f"Kein Graph für '{project}' gefunden — erst ingest_paperless/ingest_directory ausführen."
+    names = {proj: _get_project_name(proj) for proj in projs}
 
-    def _render(proj: str) -> tuple[int, int]:
-        G = nx.read_graphml(str(next((PROJECTS_DIR / proj).glob("*.graphml"))))
+    def _render(proj_id: str) -> tuple[int, int]:
+        G = nx.read_graphml(str(next((PROJECTS_DIR / proj_id).glob("*.graphml"))))
         nodes, edges = [], []
         for n, d in G.nodes(data=True):
             etype = d.get("entity_type", "")
@@ -514,20 +533,39 @@ async def graph_view(project: str) -> str:
         for u, v, d in G.edges(data=True):
             tip = d.get("description") or d.get("keywords") or ""
             edges.append({"from": u, "to": v, "desc": str(tip)[:400]})
-        (PROJECTS_DIR / proj / "graph.html").write_text(
-            graph_html(nodes, edges, f"KG: {proj}", projects=projs, current=proj),
+        proj_name = names[proj_id]
+        (PROJECTS_DIR / proj_id / "graph.html").write_text(
+            graph_html(nodes, edges, f"KG: {proj_name}", projects=projs, current=proj_id, names=names),
             encoding="utf-8")
         return len(nodes), len(edges)
 
-    n_nodes = n_edges = 0
+    n_nodes = n_edges = -1
     for p in projs:
         counts = _render(p)
-        if p == project:
+        if p == current_id:
             n_nodes, n_edges = counts
 
-    url = f"http://{PUBLIC_HOST}:{VIEWER_PORT}/{project}/graph.html"
-    return (f"Graph exportiert ({n_nodes} Entitäten, {n_edges} Beziehungen; "
-            f"{len(projs)} Projekt(e) im Umschalter).\nÖffnen: {url}")
+    return (n_nodes, n_edges)
+
+
+@mcp.tool()
+async def graph_view(project_id: str) -> str:
+    """Erzeugt eine interaktive HTML-Ansicht des Knowledge Graphs zum Durchklicken
+    (Knoten = Entitäten, gefärbt nach Typ; Kanten = Beziehungen). Details erscheinen
+    per Klick in einem Panel am unteren Rand. Gibt die URL zurück, die im Browser zu öffnen ist.
+
+    Args:
+        project_id: technischer Projekt-Schlüssel (siehe list_projects).
+    """
+    project_id = _validate_project(project_id)
+
+    # Prüfe, ob Graph existiert
+    if not any((PROJECTS_DIR / project_id).glob("*.graphml")):
+        return f"Kein Graph für '{project_id}' gefunden — erst ingest_paperless/ingest_directory ausführen."
+
+    n_nodes, n_edges = await _render_project_graphs(project_id)
+    url = f"http://{PUBLIC_HOST}:{VIEWER_PORT}/{project_id}/graph.html"
+    return (f"Graph exportiert ({n_nodes} Entitäten, {n_edges} Beziehungen).\nÖffnen: {url}")
 
 
 def _delete_project_dir(project: str) -> bool:
@@ -545,20 +583,43 @@ def _delete_project_dir(project: str) -> bool:
 
 
 @mcp.tool()
-async def delete_project(project: str, confirm: bool = False) -> str:
+async def rename_project(project_id: str, project_name: str) -> str:
+    """Setzt/ändert den Anzeigenamen eines Projekts (display name).
+    Der technische project_id (Storage-Key, Viewer-URL) bleibt unverändert.
+
+    Args:
+        project_id: technischer Projekt-Schlüssel (siehe list_projects).
+        project_name: neuer Anzeigename.
+    """
+    project_id = _validate_project(project_id)
+    if not (PROJECTS_DIR / project_id).exists():
+        return f"Projekt '{project_id}' existiert nicht."
+    meta = _load_meta(project_id)
+    meta["project_name"] = project_name
+    _save_meta(project_id, meta)
+    return f"Projekt '{project_id}': Anzeigename gesetzt auf '{project_name}'."
+
+
+@mcp.tool()
+async def delete_project(project_id: str, confirm: bool = False) -> str:
     """Löscht einen kompletten Projekt-Index (nicht die Quelldokumente!).
-    Erfordert confirm=True."""
-    _validate_project(project)
+    Erfordert confirm=True.
+
+    Args:
+        project_id: technischer Projekt-Schlüssel (siehe list_projects).
+        confirm: Löschbestätigung (muss True sein).
+    """
+    _validate_project(project_id)
     if not confirm:
-        return f"Sicherheitsabfrage: erneut mit confirm=True aufrufen, um '{project}' zu löschen."
-    if _delete_project_dir(project):
-        return f"Projekt '{project}' gelöscht."
-    return f"Projekt '{project}' existiert nicht."
+        return f"Sicherheitsabfrage: erneut mit confirm=True aufrufen, um '{project_id}' zu löschen."
+    if _delete_project_dir(project_id):
+        return f"Projekt '{project_id}' gelöscht."
+    return f"Projekt '{project_id}' existiert nicht."
 
 
 class _ViewerHandler(SimpleHTTPRequestHandler):
     """Statischer Fileserver mit hübscher Landing-Page am Root statt rohem
-    Dir-Listing. ponytail: nur '/' abgefangen, Rest bleibt stdlib-static."""
+    Dir-Listing. ponytail: nur '/', '/refresh', '/delete' abgefangen, Rest bleibt stdlib-static."""
 
     def do_GET(self):  # noqa: N802 (stdlib-Signatur)
         if self.path in ("/", "/index.html"):
@@ -571,7 +632,8 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             for name in _ingest_status:
                 rendered.setdefault(name, False)
             items = sorted(rendered.items())
-            body = index_html(items, _ingest_status).encode("utf-8")
+            meta = {proj: _load_meta(proj) for proj in rendered}
+            body = index_html(items, _ingest_status, meta).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -581,21 +643,36 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self):  # noqa: N802 (stdlib-Signatur)
-        # nur Projekt-Löschung; Bestätigung passiert im Browser (confirm-Dialog)
-        if self.path != "/delete":
-            self.send_error(404)
+        if self.path == "/refresh":
+            # Graph-Render aus vorhandenem .graphml (keine LLM-Extraktion)
+            length = int(self.headers.get("Content-Length", 0))
+            params = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8"))
+            project_id = (params.get("project_id") or [""])[0]
+            try:
+                _validate_project(project_id)
+                asyncio.run(_render_project_graphs(project_id))
+            except ValueError:
+                self.send_error(400, "invalid project_id")
+                return
+            self.send_response(303)
+            self.send_header("Location", f"/{project_id}/graph.html")
+            self.end_headers()
             return
-        length = int(self.headers.get("Content-Length", 0))
-        params = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8"))
-        project = (params.get("project") or [""])[0]
-        try:
-            _delete_project_dir(project)
-        except ValueError:
-            self.send_error(400, "invalid project name")
+        if self.path == "/delete":
+            # Projekt-Löschung; Bestätigung passiert im Browser (confirm-Dialog)
+            length = int(self.headers.get("Content-Length", 0))
+            params = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8"))
+            project_id = (params.get("project_id") or [""])[0]
+            try:
+                _delete_project_dir(project_id)
+            except ValueError:
+                self.send_error(400, "invalid project_id")
+                return
+            self.send_response(303)  # zurück zur Landing-Page
+            self.send_header("Location", "/")
+            self.end_headers()
             return
-        self.send_response(303)  # zurück zur Landing-Page
-        self.send_header("Location", "/")
-        self.end_headers()
+        self.send_error(404)
 
 
 def _start_viewer_server() -> None:
