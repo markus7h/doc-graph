@@ -72,7 +72,9 @@ Das externe Docker-Netz `paperless-ai_default` verbindet doc-graph mit
 `paperless-llama` (mistral) und `paperless-llama-embed` (bge-m3) sowie
 `paperless` (NGX via LAN-DNS) — dieselben Namen wie paperless-ai. Bei
 abweichendem Setup den Netzwerk-Block in `docker-compose.yml` anpassen oder
-`PAPERLESS_URL=http://<IP>:8010` verwenden.
+`PAPERLESS_URL=https://<host>/` (bzw. `http://<IP>:8010`) verwenden. Der
+compose-Default ist `https://paperless/`; der Client akzeptiert das
+self-signed LAN-Cert (`verify=False`).
 
 ## Claude Code anbinden
 
