@@ -17,8 +17,10 @@ import json
 import logging
 import os
 import re
+import subprocess
 import threading
 import time
+from collections import Counter
 import urllib.parse
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
@@ -48,6 +50,10 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "mistral-small3.2:24b")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "bge-m3")
 EMBED_DIM = int(os.environ.get("EMBED_DIM", "1024"))
 MAX_ASYNC = int(os.environ.get("MAX_ASYNC", "2"))
+# Timeout (s) für einen einzelnen LLM-Call an den llama-server. Bei CPU-Offload
+# (niedriger t/s) reißen dichte Chunks den Default -> hier hochsetzen. Der
+# eigentliche Engpass bleibt der Throughput (GPU), das ist nur der Deckel.
+LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "480"))
 # Chunk-Größe (Tokens). 600 statt LightRAG-Default 1200: weniger Entitäten pro
 # Chunk -> kürzere Extraktion, beseitigt den 480s-Worker-Timeout bei dichten
 # Tabellen-/Listen-Docs (siehe INGEST-FAILURE-ANALYSE.md).
@@ -66,6 +72,7 @@ async def _llm_model_func(prompt, system_prompt=None, history_messages=None, **k
         system_prompt=system_prompt,
         history_messages=history_messages or [],
         base_url=LLM_BASE_URL, api_key=LLM_API_KEY,
+        timeout=LLM_TIMEOUT,
         **kwargs,
     )
 
@@ -182,6 +189,17 @@ def _load_manifest(project: str) -> dict:
 
 def _save_manifest(project: str, manifest: dict) -> None:
     _manifest_path(project).write_text(json.dumps(manifest, indent=1))
+
+
+def _doc_status_counts(project: str) -> dict:
+    """Echte Terminal-Zustände je Dokument aus LightRAGs doc_status-Store
+    (pending/processing/processed/failed). Der 'done'-Zustand der Dispatch-
+    Schleife heißt nur 'enqueued', nicht 'im Graph' — die Wahrheit steht hier."""
+    p = PROJECTS_DIR / project / "kv_store_doc_status.json"
+    if not p.exists():
+        return {}
+    data = json.loads(p.read_text())
+    return dict(Counter(v.get("status", "unknown") for v in data.values()))
 
 
 def _hash(text: str) -> str:
@@ -439,15 +457,40 @@ async def ingest_status(project_id: str) -> str:
     """Status des laufenden/letzten ingest_paperless-Laufs (läuft im Hintergrund)."""
     project_id = _validate_project(project_id)
     st = _ingest_status.get(project_id)
-    if not st:
+    docs = _doc_status_counts(project_id)
+    if not st and not docs:
         return f"Projekt '{project_id}': kein Ingest bekannt (nichts gestartet oder Server neu gestartet)."
-    return json.dumps({k: v for k, v in st.items() if not k.startswith("_")}, ensure_ascii=False)
+    out = {k: v for k, v in (st or {}).items() if not k.startswith("_")}
+    # docs = echte LightRAG-Zustände: nur 'processed' heißt wirklich im Graph.
+    # processing/pending/failed hier sichtbar, auch wenn state='done' (Dispatch fertig).
+    if docs:
+        out["docs"] = docs
+    return json.dumps(out, ensure_ascii=False)
+
+
+def _extract_text(f: Path) -> str | None:
+    """Textinhalt einer Datei. PDF via pdftotext (poppler, im Container installiert).
+    None = nicht unterstütztes Format."""
+    suffix = f.suffix.lower()
+    if suffix in (".txt", ".md"):
+        return f.read_text(errors="replace")
+    if suffix == ".pdf":
+        r = subprocess.run(
+            ["pdftotext", "-layout", str(f), "-"],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            log.warning("pdftotext fehlgeschlagen für %s: %s", f, r.stderr[:200])
+            return None
+        return r.stdout
+    return None
 
 
 @mcp.tool()
 async def ingest_directory(project_id: str, subpath: str = "") -> str:
-    """Indexiert lokale Textdateien (.txt, .md) aus /data/inputs/<subpath>
-    in den Knowledge Graph. Für PDFs Paperless als Quelle nutzen (OCR fertig).
+    """Indexiert lokale Dateien (.txt, .md, .pdf) aus /data/inputs/<subpath>
+    in den Knowledge Graph. PDFs werden per pdftotext extrahiert (kein OCR —
+    für gescannte Bilder Paperless als Quelle nutzen).
 
     Args:
         project_id: technischer Projekt-Schlüssel.
@@ -457,16 +500,23 @@ async def ingest_directory(project_id: str, subpath: str = "") -> str:
     if not str(base).startswith(str(INPUTS_DIR)):
         return "Fehler: Pfad außerhalb des inputs-Volumes."
     if not base.exists():
-        return f"Fehler: {base} existiert nicht."
+        return (
+            f"Fehler: {base} existiert nicht. inputs-Volume im docker-compose.yml "
+            f"einkommentieren (- /host/pfad:/data/inputs:ro) und Container neu starten."
+        )
 
     rag = await get_rag(project_id)
     manifest = _load_manifest(project_id)
-    new, skipped, texts, ids = 0, 0, [], []
+    new, skipped, unsupported, texts, ids = 0, 0, 0, [], []
 
     for f in sorted(base.rglob("*")):
-        if f.suffix.lower() not in (".txt", ".md") or not f.is_file():
+        if not f.is_file():
             continue
-        text = f"Dokument: {f.name}\n\n" + f.read_text(errors="replace")
+        content = _extract_text(f)
+        if content is None:
+            unsupported += 1
+            continue
+        text = f"Dokument: {f.name}\n\n" + content
         doc_key = f"file:{f.relative_to(INPUTS_DIR)}"
         h = _hash(text)
         if manifest.get(doc_key) == h:
@@ -481,7 +531,10 @@ async def ingest_directory(project_id: str, subpath: str = "") -> str:
         await rag.ainsert(texts, ids=ids)
         _save_manifest(project_id, manifest)
 
-    return f"Projekt '{project_id}': {new} Dateien indexiert, {skipped} unverändert."
+    return (
+        f"Projekt '{project_id}': {new} Dateien indexiert, {skipped} unverändert, "
+        f"{unsupported} ignoriert (nur .txt/.md/.pdf unterstützt)."
+    )
 
 
 @mcp.tool()

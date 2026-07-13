@@ -148,8 +148,8 @@ Der Viewer ist ein stdlib-Fileserver (LAN-intern, kein Auth/HTTPS).
 |---|---|
 | `list_projects()` | Projekte + Dokumentzahl (zeigt project_id, optional Anzeigename in Klammern) |
 | `ingest_paperless(project_id, tag/document_type/correspondent/query_text)` | Delta-Indexierung aus Paperless (Hash-Manifest, nur Neues/Geändertes) — Extraktion läuft im Hintergrund, das Tool kehrt sofort zurück |
-| `ingest_status(project_id)` | Fortschritt/Ergebnis des laufenden bzw. letzten Ingest-Laufs |
-| `ingest_directory(project_id, subpath)` | .txt/.md aus gemountetem Verzeichnis |
+| `ingest_status(project_id)` | Fortschritt/Ergebnis des laufenden bzw. letzten Ingest-Laufs. Feld `docs` zeigt die **echten** LightRAG-Zustände (`processed`/`processing`/`pending`/`failed`) — nur `processed` heißt wirklich im Graph; `state:done` heißt nur „Dispatch fertig" |
+| `ingest_directory(project_id, subpath)` | .txt/.md/.pdf aus gemountetem Verzeichnis (PDF via pdftotext, kein OCR — gescannte Bilder über Paperless) |
 | `query(project_id, question, mode, only_context, max_total_tokens)` | Abfrage: local / global / hybrid / mix / naive. `only_context` ist **default True** (Claude formuliert aus dem Kontext); die lokale LLM-Formulierung ist auf geteilter GPU zu langsam. `max_total_tokens` (default 12000) deckelt den Kontext, damit er das MCP-Token-Limit nicht sprengt |
 | `get_entity(project_id, entity_name)` | Alle Fakten/Relationen zu einer Entität |
 | `graph_view(project_id)` | Interaktive HTML-Graphansicht, gibt Viewer-URL zurück |
@@ -187,6 +187,12 @@ Der Viewer ist ein stdlib-Fileserver (LAN-intern, kein Auth/HTTPS).
   Bestand `delete_project` + Re-Ingest.
 - **`QUERY_MAX_TOKENS`** (default 12000): globaler Default für das Kontext-Budget je
   Query; pro Abfrage via `max_total_tokens` überschreibbar.
+- **`LLM_TIMEOUT`** (default 480 s): Timeout je einzelnem LLM-Call. Bei CPU-Offload/
+  niedrigem Throughput hochsetzen. **Achtung:** löst nur das Symptom — der Engpass bei
+  dichten Docs ist der GPU-Throughput (z. B. ~5,8 t/s im CPU-Offload); dauerhaft hilft
+  nur Voll-GPU-Extraktion (`swap-to-qwen.sh`), nicht ein höherer Timeout.
+- **`MAX_ASYNC`** (default 2): parallele LLM-Calls. Bei dichten Beständen / knapper
+  GPU auf `1` setzen, damit ein Poison-Doc nicht den ganzen Durchsatz frisst.
 - **`GRAPH_LANGUAGE`** (default `German`): Sprache der extrahierten Entitäten/
   Beschreibungen. LightRAG-Default wäre `English` (Graph-Einträge landen dann
   englisch trotz deutscher Docs). Wirkt nur auf **neu** indexierte Dokumente —

@@ -26,6 +26,8 @@ services:
       PUBLIC_HOST: ${PUBLIC_HOST:-myubuntu}   # Host für die Viewer-URL im Browser
       PROJECTS_DIR: /data/projects
       MAX_ASYNC: ${MAX_ASYNC:-2}
+      # Timeout je LLM-Call (s). Bei CPU-Offload/niedrigem t/s hochsetzen. ---
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-480}
     volumes:
       # Persistente KG-Stores, ein Unterordner pro Projekt.
       # ABSOLUTER Pfad bewusst: ein 'docker compose up' aus dem Git-Repo (falsches
@@ -33,7 +35,8 @@ services:
       # liefern no-context. Kanonischer Datenort ist das Deploy-Dir.
       - /var/local/mydocker/doc-graph/data/projects:/data/projects
       # Optional für ingest_directory: lokales Dokumentverzeichnis read-only.
-      # Pfad an myubuntu anpassen und einkommentieren; primäre Quelle ist Paperless.
+      # Pfad an den Host anpassen und einkommentieren (Verzeichnis muss existieren,
+      # sonst legt Docker es leer als root an); primäre Quelle bleibt Paperless.
       # - /home/markus/dokumente:/data/inputs:ro
     networks:
       # Selbes Netz wie die llama-Server + paperless-ai: löst 'paperless-llama' /
