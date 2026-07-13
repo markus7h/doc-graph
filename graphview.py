@@ -211,6 +211,8 @@ def graph_html(nodes: list[dict], edges: list[dict], title: str,
     <button type="submit" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:5px 11px;font-size:12px;cursor:pointer;white-space:nowrap;transition:all .15s" title="Anzeigenamen ändern">Umbenennen</button>
   </form>
   <label class="muted"><input type="checkbox" id="phys" checked onchange="net&&net.setOptions({{physics:{{enabled:this.checked}}}})"> Physik</label>
+  <label class="muted" title="Kantenlänge (springLength)">Verbindung <input type="range" id="spring" min="40" max="400" value="130" oninput="applyPhys()"></label>
+  <label class="muted" title="Knoten-Abstand / Repulsion (gravitationalConstant)">Abstand <input type="range" id="repel" min="1000" max="30000" value="8000" oninput="applyPhys()"></label>
   <span class="muted">Typ-Filter: Legende anklicken</span>
 </div>
 <div id="netwrap"><div id="net"></div><div id="info"></div></div>
@@ -242,7 +244,8 @@ def graph_html(nodes: list[dict], edges: list[dict], title: str,
     $('cnt').textContent=`${{nodes.length}} Knoten · ${{edges.length}} Kanten`;
     const nodesDS=new vis.DataSet(nodes), edgesDS=new vis.DataSet(edges);
     net=new vis.Network($('net'),{{nodes:nodesDS,edges:edgesDS}},{{
-      physics:{{enabled:$('phys').checked,stabilization:{{iterations:150}},barnesHut:{{gravitationalConstant:-8000,springLength:130}}}},
+      physics:{{enabled:$('phys').checked,stabilization:{{iterations:150}},
+        barnesHut:{{gravitationalConstant:-(+$('repel').value),springLength:+$('spring').value}}}},
       interaction:{{hover:true}}}});
     net.on('click',p=>{{
       if(p.nodes.length){{const src=data.nodes.find(x=>x.id===p.nodes[0]);showInfo(src.label,src.group,src.desc);}}
@@ -252,6 +255,8 @@ def graph_html(nodes: list[dict], edges: list[dict], title: str,
     }});
   }}
 
+  function applyPhys(){{net&&net.setOptions({{physics:{{enabled:$('phys').checked,
+    barnesHut:{{gravitationalConstant:-(+$('repel').value),springLength:+$('spring').value}}}}}});}}
   function toggleType(t){{HIDE.has(t)?HIDE.delete(t):HIDE.add(t);renderLeg();build();}}
   function renderLeg(){{
     $('leg').innerHTML=Object.entries(COL).map(([t,c])=>
