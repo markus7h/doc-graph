@@ -85,6 +85,9 @@ mehrzeiligen Panel. Bedienung:
 
 - **Typ-Filter:** Legende unten anklicken blendet Entitätstypen aus/ein.
 - **Physik:** Checkbox schaltet das Force-Layout an/aus.
+- **nur Verbundene / Distanz:** Knoten anklicken, dann „nur Verbundene" anhaken —
+  zeigt nur dessen Nachbarschaft bis zur eingestellten `Distanz` (Hops). Doppelklick
+  setzt den Anker auf einen anderen Knoten um.
 - **Projekt-Umschalter:** Dropdown oben wechselt zur `graph.html` eines anderen
   Projekts (erscheint ab zwei indexierten Projekten, zeigt optional den Anzeigenamen).
 - **Aktualisieren-Button:** Rendert die graph.html aus dem vorhandenen `.graphml` neu

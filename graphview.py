@@ -211,8 +211,8 @@ def graph_html(nodes: list[dict], edges: list[dict], title: str,
     <button type="submit" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:5px 11px;font-size:12px;cursor:pointer;white-space:nowrap;transition:all .15s" title="Anzeigenamen ändern">Umbenennen</button>
   </form>
   <label class="muted"><input type="checkbox" id="phys" checked onchange="net&&net.setOptions({{physics:{{enabled:this.checked}}}})"> Physik</label>
-  <label class="muted" title="Kantenlänge (springLength)">Verbindung <input type="range" id="spring" min="40" max="400" value="130" oninput="applyPhys()"></label>
-  <label class="muted" title="Knoten-Abstand / Repulsion (gravitationalConstant)">Abstand <input type="range" id="repel" min="1000" max="30000" value="8000" oninput="applyPhys()"></label>
+  <label class="muted" title="Knoten anklicken, dann anhaken: zeigt nur dessen Nachbarschaft (Doppelklick setzt Anker um)"><input type="checkbox" id="focus" onchange="setFocus()"> nur Verbundene</label>
+  <label class="muted" title="Nachbarschafts-Tiefe in Hops">Distanz <input type="number" id="depth" value="1" min="1" style="width:3em" onchange="build()"></label>
   <span class="muted">Typ-Filter: Legende anklicken</span>
 </div>
 <div id="netwrap"><div id="net"></div><div id="info"></div></div>
@@ -224,7 +224,7 @@ def graph_html(nodes: list[dict], edges: list[dict], title: str,
   const COL={{}};                       // Typ -> Farbe (aus den Node-Farben)
   data.nodes.forEach(n=>{{ if(n.group && !(n.group in COL)) COL[n.group]=n.color||'#636363'; }});
   const HIDE=new Set();                 // ausgeblendete Typen (Legende)
-  let net=null;
+  let net=null, SEL=null, FOCUS=null;   // SEL=angeklickt, FOCUS=Fokus-Anker
 
   function showInfo(header, group, body){{
     const chip=group?`<span class="chip" style="background:${{COL[group]||'#636363'}}">${{esc(group)}}</span>`:'';
@@ -234,7 +234,16 @@ def graph_html(nodes: list[dict], edges: list[dict], title: str,
   }}
 
   function build(){{
-    const ents=data.nodes.filter(n=>!HIDE.has(n.group));
+    let ents=data.nodes.filter(n=>!HIDE.has(n.group));
+    if($('focus').checked&&FOCUS){{  // Anker + Nachbarn bis Distanz n (BFS)
+      const depth=Math.max(1,+$('depth').value||1);
+      const nb=new Set([FOCUS]);
+      for(let d=0;d<depth;d++){{
+        const cur=new Set(nb);  // Snapshot: genau eine Distanz pro Runde
+        data.edges.forEach(e=>{{if(cur.has(e.from))nb.add(e.to);if(cur.has(e.to))nb.add(e.from);}});
+      }}
+      ents=ents.filter(n=>nb.has(n.id));
+    }}
     const ok=new Set(ents.map(n=>n.id));
     const nodes=ents.map(n=>({{id:n.id,label:n.label,color:n.color,
       shape:'dot',size:14,font:{{size:13,color:'#333'}}}}));
@@ -244,19 +253,21 @@ def graph_html(nodes: list[dict], edges: list[dict], title: str,
     $('cnt').textContent=`${{nodes.length}} Knoten · ${{edges.length}} Kanten`;
     const nodesDS=new vis.DataSet(nodes), edgesDS=new vis.DataSet(edges);
     net=new vis.Network($('net'),{{nodes:nodesDS,edges:edgesDS}},{{
-      physics:{{enabled:$('phys').checked,stabilization:{{iterations:150}},
-        barnesHut:{{gravitationalConstant:-(+$('repel').value),springLength:+$('spring').value}}}},
+      physics:{{enabled:$('phys').checked,stabilization:{{iterations:150}},barnesHut:{{gravitationalConstant:-8000,springLength:130}}}},
       interaction:{{hover:true}}}});
     net.on('click',p=>{{
-      if(p.nodes.length){{const src=data.nodes.find(x=>x.id===p.nodes[0]);showInfo(src.label,src.group,src.desc);}}
+      if(p.nodes.length){{SEL=p.nodes[0];const src=data.nodes.find(x=>x.id===SEL);showInfo(src.label,src.group,src.desc);}}
       else if(p.edges.length){{const e=edgesDS.get(p.edges[0]);const u=nodesDS.get(e.from),v=nodesDS.get(e.to);
         showInfo((u?u.label:e.from)+' → '+(v?v.label:e.to),'',e.desc);}}
-      else{{$('info').style.display='none';}}
+      else{{SEL=null;$('info').style.display='none';}}
+    }});
+    net.on('doubleClick',p=>{{  // Doppelklick im Fokus-Modus: Anker umsetzen
+      if(p.nodes.length&&$('focus').checked){{FOCUS=SEL=p.nodes[0];
+        const src=data.nodes.find(x=>x.id===FOCUS);showInfo(src.label,src.group,src.desc);build();}}
     }});
   }}
+  function setFocus(){{FOCUS=$('focus').checked?SEL:null;build();}}  // Anker = aktuelle Auswahl
 
-  function applyPhys(){{net&&net.setOptions({{physics:{{enabled:$('phys').checked,
-    barnesHut:{{gravitationalConstant:-(+$('repel').value),springLength:+$('spring').value}}}}}});}}
   function toggleType(t){{HIDE.has(t)?HIDE.delete(t):HIDE.add(t);renderLeg();build();}}
   function renderLeg(){{
     $('leg').innerHTML=Object.entries(COL).map(([t,c])=>
