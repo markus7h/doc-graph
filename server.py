@@ -116,6 +116,13 @@ _init_lock = asyncio.Lock()
 # Neustart weg -> nicht gespeicherter Manifest sorgt für Re-Ingest, unkritisch).
 _ingest_status: dict[str, dict] = {}
 
+# LightRAG-Instanzen teilen im selben Prozess den pipeline_status-Lock: läuft
+# die Pipeline von Projekt A, kehrt ainsert() von Projekt B SOFORT zurück
+# (Doc nur enqueued, "request pending") — B hielte das Doc fälschlich für
+# verarbeitet. Ein globaler Insert-Lock serialisiert alle ainsert-Aufrufe;
+# bei geteilter GPU ist sequenziell ohnehin richtig.
+_insert_lock = asyncio.Lock()
+
 # ----------------------------------------------------------------------------
 # GPU-Swap: für die Dauer eines Ingests qwen3-14b VOLL auf die GPU, mistral +
 # paperless-ai pausieren (sonst nur Teil-GPU-Offload -> langsam/Timeouts).
@@ -242,6 +249,16 @@ def _doc_status_counts(project: str) -> dict:
         return {}
     data = json.loads(p.read_text())
     return dict(Counter(v.get("status", "unknown") for v in data.values()))
+
+
+def _doc_state(project: str, doc_key: str) -> str:
+    """Echter LightRAG-Zustand EINES Dokuments (''=unbekannt). Guard nach
+    ainsert: nur 'processed' darf ins Manifest — ainsert kann zurückkehren,
+    ohne verarbeitet zu haben (geteilter Pipeline-Lock, Kill mittendrin)."""
+    p = PROJECTS_DIR / project / "kv_store_doc_status.json"
+    if not p.exists():
+        return ""
+    return json.loads(p.read_text()).get(doc_key, {}).get("status", "")
 
 
 def _hash(text: str) -> str:
@@ -467,9 +484,15 @@ async def ingest_paperless(
             # kontrolliert ab; das finally swappt zurück.
             await _swap_begin()
             for doc_key, text, h in pending:
-                await rag.ainsert([text], ids=[doc_key])
-                manifest[doc_key] = h
-                _save_manifest(project_id, manifest)
+                async with _insert_lock:
+                    await rag.ainsert([text], ids=[doc_key])
+                # Guard: Hash nur ins Manifest, wenn LightRAG das Doc wirklich
+                # verarbeitet hat — sonst holt der nächste Ingest es nach.
+                if _doc_state(project_id, doc_key) == "processed":
+                    manifest[doc_key] = h
+                    _save_manifest(project_id, manifest)
+                else:
+                    log.warning("Doc %s nicht 'processed' nach ainsert — bleibt für Re-Ingest offen", doc_key)
                 done += 1
                 _ingest_status[project_id]["done"] = done  # in-place: Poller-Feld bleibt
             _ingest_status[project_id] = {
@@ -580,7 +603,13 @@ async def ingest_directory(project_id: str, subpath: str = "") -> str:
         # ingest_paperless in einen Hintergrund-Task ziehen.
         await _swap_begin()
         try:
-            await rag.ainsert(texts, ids=ids)
+            async with _insert_lock:
+                await rag.ainsert(texts, ids=ids)
+            # Guard wie bei ingest_paperless: nur wirklich Verarbeitetes ins Manifest.
+            for doc_key in ids:
+                if _doc_state(project_id, doc_key) != "processed":
+                    manifest.pop(doc_key, None)
+                    log.warning("Doc %s nicht 'processed' nach ainsert — bleibt für Re-Ingest offen", doc_key)
             _save_manifest(project_id, manifest)
         finally:
             await _swap_end()

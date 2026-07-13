@@ -177,7 +177,11 @@ Der Viewer ist ein stdlib-Fileserver (LAN-intern, kein Auth/HTTPS).
   `paperless-llama`); nach Abschluss `swap-to-mistral.sh` (zurück auf mistral +
   paperless-ai). Paralleler Ingest über mehrere Projekte swappt per Refcount nur
   einmal rein/raus; ein Crash mitten im Ingest wird beim nächsten Serverstart
-  zurückgeswappt. Voraussetzung: `/var/run/docker.sock` ist in den doc-graph-
+  zurückgeswappt. Inserts laufen global serialisiert (LightRAG-Instanzen teilen
+  den Pipeline-Lock — paralleles `ainsert` kehrt sonst unverarbeitet zurück), und
+  ein Dokument gilt erst als indexiert, wenn LightRAG es wirklich `processed`
+  meldet — sonst holt der nächste Ingest es automatisch nach.
+  Voraussetzung: `/var/run/docker.sock` ist in den doc-graph-
   Container gemountet (compose) — root-äquivalent auf dem Host, bewusst, das Netz
   ist intern. Abschaltbar via `INGEST_SWAP=0` (z. B. lokale Dev-Umgebung ohne Socket).
 - **Wöchentlicher Modell-Check:** `model_check.sh` (via cron) lässt einen
