@@ -658,6 +658,24 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             self.send_header("Location", f"/{project_id}/graph.html")
             self.end_headers()
             return
+        if self.path == "/rename":
+            # Projekt umbenennen (project_name setzen)
+            length = int(self.headers.get("Content-Length", 0))
+            params = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8"))
+            project_id = (params.get("project_id") or [""])[0]
+            project_name = (params.get("project_name") or [""])[0]
+            try:
+                _validate_project(project_id)
+                meta = _load_meta(project_id)
+                meta["project_name"] = project_name
+                _save_meta(project_id, meta)
+            except ValueError:
+                self.send_error(400, "invalid project_id")
+                return
+            self.send_response(303)
+            self.send_header("Location", "/")
+            self.end_headers()
+            return
         if self.path == "/delete":
             # Projekt-Löschung; Bestätigung passiert im Browser (confirm-Dialog)
             length = int(self.headers.get("Content-Length", 0))

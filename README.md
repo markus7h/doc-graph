@@ -89,6 +89,7 @@ mehrzeiligen Panel. Bedienung:
   Projekts (erscheint ab zwei indexierten Projekten, zeigt optional den Anzeigenamen).
 - **Aktualisieren-Button:** Rendert die graph.html aus dem vorhandenen `.graphml` neu
   (keine LLM-Extraktion, schnell). Nötig z.B. nach `rename_project`.
+- **Umbenennen-Button:** Öffnet ein Eingabefeld für den neuen Anzeigenamen (ersetzt die Notwendigkeit, `rename_project()` im Code aufzurufen).
 
 Das Tool gibt die URL zurück:
 
@@ -103,9 +104,10 @@ den Graphen. Läuft gerade ein `ingest_paperless`, trägt die betroffene Karte e
 Dokumente werden einzeln extrahiert (Zähler pro fertigem Dokument); zusätzlich zeigt das
 Badge LightRAGs aktuelle Live-Meldung (z.B. „Chunk 5 of 26 extracted …"), sodass man
 den Fortschritt auch innerhalb eines langen Dokuments sieht. Bei laufendem Import lädt
-die Seite sich alle 5 s selbst neu, ohne dass man ein MCP-Tool aufrufen muss. Jede Karte hat zwei Buttons:
+die Seite sich alle 5 s selbst neu, ohne dass man ein MCP-Tool aufrufen muss. Jede Karte hat drei Buttons:
 
 - **Erstellen/Aktualisieren:** Rendert den Graphen aus `.graphml` (POST `/refresh`).
+- **Umbenennen:** Öffnet ein Eingabefeld für den neuen Anzeigenamen (POST `/rename`).
 - **Löschen:** Entfernt den Projekt-Index nach Browser-Bestätigung (Quelldokumente
   bleiben) — serverseitig derselbe Weg wie das MCP-Tool `delete_project`.
 
@@ -157,7 +159,7 @@ Der Viewer ist ein stdlib-Fileserver (LAN-intern, kein Auth/HTTPS).
   LLM-Calls für die Extraktion. Danach nur Delta. Erstlauf am besten nachts starten.
   Der teure Teil läuft **im Hintergrund**: `ingest_paperless` startet die Extraktion
   und kehrt sofort zurück (sonst liefe der MCP-Call ins Timeout); Fortschritt/Ergebnis
-  liefert `ingest_status(project)` (`running`/`done`/`error`). Der Status liegt nur im
+  liefert `ingest_status(project_id)` (`running`/`done`/`error`). Der Status liegt nur im
   RAM — ein Container-Neustart mitten im Lauf verwirft ihn, das noch nicht gespeicherte
   Manifest sorgt dann beim nächsten Ingest für sauberes Nachholen.
 - **Modellqualität = Graphqualität.** Wenn der Graph zu dünn wirkt

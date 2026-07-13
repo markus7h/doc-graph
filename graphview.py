@@ -66,16 +66,22 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
                 '<span class="go"> · Graph öffnen →</span></a>' if has else
                 f'<span class="nm">{_esc(display_name)}</span>'
                 f'<span class="hint">noch nicht gerendert</span>') + badge
-        # Buttons: Erstellen/Aktualisieren (POST /refresh) + Löschen
+        # Buttons: Erstellen/Aktualisieren (POST /refresh) + Umbenennen + Löschen
         refresh_form = (f'<form method="post" action="/refresh" class="del" style="margin-right:6px">'
                        f'<input type="hidden" name="project_id" value="{e}">'
                        f'<button title="{"Graph aktualisieren" if has else "Graph erstellen"}">{"Aktualisieren" if has else "Erstellen"}</button></form>')
+        rename_form = (f'<form method="post" action="/rename" class="del" style="margin-right:6px" '
+                      f'onsubmit="const n=prompt(\'Neuer Anzeigename für &quot;{e}&quot;:\', \'{_esc(display_name)}\'); '
+                      f'if(n===null) return false; document.querySelector(\'input[name=project_name]\').value=n; return true;">'
+                      f'<input type="hidden" name="project_id" value="{e}">'
+                      f'<input type="hidden" name="project_name" value="">'
+                      '<button type="submit" title="Anzeigenamen ändern">Umbenennen</button></form>')
         delete_form = (f'<form method="post" action="/delete" class="del" '
                       f"onsubmit=\"return confirm('Projekt &quot;{e}&quot; löschen? "
                       "Der Index wird entfernt, die Quelldokumente bleiben.')\">"
                       f'<input type="hidden" name="project_id" value="{e}">'
                       '<button title="Projekt-Index löschen">Löschen</button></form>')
-        forms = refresh_form + delete_form
+        forms = refresh_form + rename_form + delete_form
         cls = "card" if has else "card todo"
         return f'<div class="{cls}"><div class="left">{left}</div><div style="display:flex;gap:6px">{forms}</div></div>'
 
@@ -195,9 +201,14 @@ def graph_html(nodes: list[dict], edges: list[dict], title: str,
 <p class="sub"><span id="cnt">lädt…</span> &nbsp;·&nbsp; ziehen/scrollen zum Navigieren, Knoten/Kante anklicken für Details, Legende anklicken zum Filtern</p>
 <div class="bar">
   {proj_select}
-  <form method="post" action="../refresh" style="margin:0;display:inline">
+  <form method="post" action="../refresh" style="margin:0;display:inline;margin-right:6px">
     <input type="hidden" name="project_id" value="{current}">
     <button type="submit" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:5px 11px;font-size:12px;cursor:pointer;white-space:nowrap;transition:all .15s" title="Graph aus .graphml neu rendern">Aktualisieren</button>
+  </form>
+  <form method="post" action="../rename" style="margin:0;display:inline;margin-right:6px" onsubmit="const n=prompt('Neuer Anzeigename:'); if(n===null) return false; document.querySelector('input[name=project_name]').value=n; return true;">
+    <input type="hidden" name="project_id" value="{current}">
+    <input type="hidden" name="project_name" value="">
+    <button type="submit" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:5px 11px;font-size:12px;cursor:pointer;white-space:nowrap;transition:all .15s" title="Anzeigenamen ändern">Umbenennen</button>
   </form>
   <label class="muted"><input type="checkbox" id="phys" checked onchange="net&&net.setOptions({{physics:{{enabled:this.checked}}}})"> Physik</label>
   <span class="muted">Typ-Filter: Legende anklicken</span>
