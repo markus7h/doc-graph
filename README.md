@@ -124,7 +124,48 @@ die Seite sich alle 5 s selbst neu, ohne dass man ein MCP-Tool aufrufen muss. Je
 - **Löschen:** Entfernt den Projekt-Index nach Browser-Bestätigung (Quelldokumente
   bleiben) — serverseitig derselbe Weg wie das MCP-Tool `delete_project`.
 
+Darunter liegt die **Backup**-Karte (siehe unten): Zeitplan-Dropdown, „Jetzt sichern"
+und die letzten Archive.
+
 Der Viewer ist ein stdlib-Fileserver (LAN-intern, kein Auth/HTTPS).
+
+## Backup
+
+Der Server sichert alle Projektdaten (`/data/projects`) als `tar.gz` in einen
+gemounteten Ordner — analog ai-rem, dessen Backups im selben OneDrive-Verzeichnis
+daneben liegen:
+
+```yaml
+# docker-compose.yml
+- ${DOC_GRAPH_BACKUP_PATH:-/home/markus/mystorage/OneDrive/doc-graph}:/backups
+```
+
+Bedienung komplett über die Viewer-Landing-Page (`http://myubuntu:5776/`):
+
+- **Zeitplan:** `aus` / `stündlich` / `täglich` / `wöchentlich`, „Speichern" übernimmt.
+  Die Einstellung liegt in `<Backup-Ordner>/.config.json` und überlebt Neustarts.
+- **Jetzt sichern:** Schreibt sofort ein Archiv.
+
+Verhalten:
+
+- Dateiname `backup_<YYYY-MM-DD_HH-MM-SS>.tar.gz`, Rotation auf die letzten
+  `MAX_BACKUPS` (Default 10) — ältere werden gelöscht.
+- **Kein Backup während eines Ingests** (das Archiv wäre ein Zwischenstand); der
+  Scheduler prüft minütlich und holt es danach nach. Der Button meldet in dem Fall
+  einen Konflikt.
+- **Unverändert = kein Backup:** Haben sich die Projektdateien seit dem letzten
+  Archiv nicht geändert (Dateizahl/Größe/mtime), wird der Lauf übersprungen.
+- **Unverschlüsselt** — bewusst: die Quelldokumente liegen im selben OneDrive
+  ohnehin im Klartext (bei ai-rem ist das anders, dort ist der Graph das Original).
+
+Restore: Container stoppen, Archiv über das Datenverzeichnis entpacken, Container starten.
+
+```bash
+docker compose -f /var/local/mydocker/doc-graph/docker-compose.yml down
+tar -xzf /home/markus/mystorage/OneDrive/doc-graph/backup_<ts>.tar.gz \
+    -C /var/local/mydocker/doc-graph/data --strip-components=1   # projects/ -> data/projects
+docker compose -f /var/local/mydocker/doc-graph/docker-compose.yml up -d
+```
 
 ## Typischer Workflow
 

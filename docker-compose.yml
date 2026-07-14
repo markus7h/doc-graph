@@ -25,6 +25,9 @@ services:
       VIEWER_PORT: "5776"
       PUBLIC_HOST: ${PUBLIC_HOST:-myubuntu}   # Host für die Viewer-URL im Browser
       PROJECTS_DIR: /data/projects
+      # --- Backup: tar.gz der Projekte ins gemountete Ziel, Zeitplan in der Web-UI ---
+      BACKUP_DIR: /backups
+      MAX_BACKUPS: ${MAX_BACKUPS:-10}
       MAX_ASYNC: ${MAX_ASYNC:-2}
       # Timeout je LLM-Call (s). Bei CPU-Offload/niedrigem t/s hochsetzen. ---
       LLM_TIMEOUT: ${LLM_TIMEOUT:-480}
@@ -34,6 +37,9 @@ services:
       # CWD) darf NICHT ./data des Repos mounten -> sonst leerer Index, alle Queries
       # liefern no-context. Kanonischer Datenort ist das Deploy-Dir.
       - /var/local/mydocker/doc-graph/data/projects:/data/projects
+      # Backup-Ziel (analog ai-rem: eigener Ordner neben ai-rem in OneDrive).
+      # Der Server rotiert dort auf die letzten MAX_BACKUPS Archive.
+      - ${DOC_GRAPH_BACKUP_PATH:-/home/markus/mystorage/OneDrive/doc-graph}:/backups
       # Optional für ingest_directory: lokales Dokumentverzeichnis read-only.
       # Pfad an den Host anpassen und einkommentieren (Verzeichnis muss existieren,
       # sonst legt Docker es leer als root an); primäre Quelle bleibt Paperless.

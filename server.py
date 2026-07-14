@@ -18,9 +18,11 @@ import logging
 import os
 import re
 import subprocess
+import tarfile
 import threading
 import time
 from collections import Counter
+from datetime import datetime
 import urllib.parse
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
@@ -96,6 +98,10 @@ PAPERLESS_TOKEN = os.environ.get("PAPERLESS_TOKEN", "")
 
 PROJECTS_DIR = Path(os.environ.get("PROJECTS_DIR", "/data/projects"))
 INPUTS_DIR = Path("/data/inputs")
+# Backup-Ziel (gemountet, i.d.R. OneDrive/doc-graph). Rotation auf die letzten
+# MAX_BACKUPS Archive; Intervall/An-Aus kommen aus .config.json (via Web-UI).
+BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", "/backups"))
+MAX_BACKUPS = int(os.environ.get("MAX_BACKUPS", "10"))
 MCP_PORT = int(os.environ.get("MCP_PORT", "5775"))
 VIEWER_PORT = int(os.environ.get("VIEWER_PORT", "5776"))
 # Hostname, unter dem der Viewer vom Browser erreichbar ist (für die zurückgegebene URL)
@@ -757,6 +763,96 @@ async def delete_project(project_id: str, confirm: bool = False) -> str:
     return f"Projekt '{project_id}' existiert nicht."
 
 
+# ----------------------------------------------------------------------------
+# Backup: tar.gz von PROJECTS_DIR nach BACKUP_DIR, Rotation + Scheduler.
+# Nach Vorbild ai-rem (gleiche Dateinamen-Konvention, .config.json als Status).
+# ponytail: unverschlüsselt — die Quelldokumente liegen im selben OneDrive
+# ebenfalls im Klartext, ein Key schützte hier nichts.
+# ----------------------------------------------------------------------------
+BACKUP_INTERVALS = {"hourly": 3600, "daily": 86400, "weekly": 604800}
+_BACKUP_CONFIG = BACKUP_DIR / ".config.json"
+
+
+def _load_backup_cfg() -> dict:
+    try:
+        return json.loads(_BACKUP_CONFIG.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {"enabled": True, "interval": "daily", "last_backup": None}
+
+
+def _save_backup_cfg(cfg: dict) -> None:
+    # ponytail: kein flock wie in ai-rem — hier schreiben nur Scheduler-Thread
+    # und Viewer-Thread desselben Prozesses, atomares replace reicht.
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = _BACKUP_CONFIG.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(cfg, indent=2))
+    tmp.replace(_BACKUP_CONFIG)
+
+
+def _projects_signature() -> dict:
+    """Fingerabdruck der Projektdaten — ändert er sich nicht, ist ein neues
+    Backup sinnlos (ai-rem vergleicht analog die Graph-Zählung)."""
+    files = [p for p in PROJECTS_DIR.rglob("*") if p.is_file()]
+    return {
+        "files": len(files),
+        "bytes": sum(p.stat().st_size for p in files),
+        "max_mtime": max((p.stat().st_mtime for p in files), default=0),
+    }
+
+
+def _list_backup_files() -> list[Path]:
+    return sorted(BACKUP_DIR.glob("backup_*.tar.gz"), reverse=True)
+
+
+def _do_backup() -> str:
+    """Schreibt ein tar.gz aller Projekte, rotiert alte weg, gibt den Namen zurück."""
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    name = f"backup_{ts}.tar.gz"
+    path = BACKUP_DIR / name
+
+    tmp = path.with_suffix(".tar.gz.tmp")
+    with tarfile.open(tmp, "w:gz") as tar:
+        tar.add(PROJECTS_DIR, arcname="projects")
+    tmp.replace(path)
+
+    cfg = _load_backup_cfg()
+    cfg["last_backup"] = _now()
+    cfg["last_backup_file"] = name
+    cfg["last_backup_signature"] = _projects_signature()
+    _save_backup_cfg(cfg)
+
+    for old in _list_backup_files()[MAX_BACKUPS:]:
+        old.unlink(missing_ok=True)
+
+    log.info("Backup geschrieben: %s (%.1f MB)", name, path.stat().st_size / 1024 / 1024)
+    return name
+
+
+def _backup_scheduler() -> None:
+    """Prüft minütlich, ob ein geplantes Backup fällig ist."""
+    while True:
+        time.sleep(60)
+        try:
+            cfg = _load_backup_cfg()
+            if not cfg.get("enabled"):
+                continue
+            # Läuft ein Ingest, schreibt LightRAG gerade in die Stores — dann
+            # gäbe das tar einen halben Stand. Nächster Tick versucht es erneut.
+            if _active_ingests > 0:
+                continue
+            last = cfg.get("last_backup")
+            if last:
+                delta = (datetime.now() - datetime.fromisoformat(last)).total_seconds()
+                if delta < BACKUP_INTERVALS.get(cfg.get("interval", "daily"), 86400):
+                    continue
+            if cfg.get("last_backup_signature") == _projects_signature():
+                continue  # nichts geändert seit dem letzten Backup
+            _do_backup()
+        except Exception:  # noqa: BLE001 — Scheduler darf nie sterben
+            log.exception("Geplantes Backup fehlgeschlagen")
+
+
 class _ViewerHandler(SimpleHTTPRequestHandler):
     """Statischer Fileserver mit hübscher Landing-Page am Root statt rohem
     Dir-Listing. ponytail: nur '/', '/refresh', '/delete' abgefangen, Rest bleibt stdlib-static."""
@@ -777,7 +873,10 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             for proj_id in rendered.keys():
                 if (PROJECTS_DIR / proj_id / "meta.json").exists():
                     meta[proj_id] = _load_meta(proj_id)
-            body = index_html(items, _ingest_status, meta).encode("utf-8")
+            backups = [{"name": f.name, "size": f.stat().st_size, "mtime": f.stat().st_mtime}
+                       for f in _list_backup_files()]
+            body = index_html(items, _ingest_status, meta,
+                              _load_backup_cfg(), backups).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -820,6 +919,36 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             self.send_header("Location", "/")
             self.end_headers()
             return
+        if self.path == "/backup/now":
+            if _active_ingests > 0:
+                self.send_error(409, "Ingest laeuft — Backup waere unvollstaendig")
+                return
+            try:
+                _do_backup()
+            except Exception:  # noqa: BLE001 — Fehler gehört in die UI, nicht in einen 500er-Trace
+                log.exception("Manuelles Backup fehlgeschlagen")
+                self.send_error(500, "Backup fehlgeschlagen — siehe Server-Log")
+                return
+            self.send_response(303)
+            self.send_header("Location", "/")
+            self.end_headers()
+            return
+        if self.path == "/backup/config":
+            length = int(self.headers.get("Content-Length", 0))
+            params = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8"))
+            interval = (params.get("interval") or [""])[0]
+            if interval not in BACKUP_INTERVALS and interval != "off":
+                self.send_error(400, "invalid interval")
+                return
+            cfg = _load_backup_cfg()
+            cfg["enabled"] = interval != "off"
+            if interval != "off":
+                cfg["interval"] = interval
+            _save_backup_cfg(cfg)
+            self.send_response(303)
+            self.send_header("Location", "/")
+            self.end_headers()
+            return
         if self.path == "/delete":
             # Projekt-Löschung; Bestätigung passiert im Browser (confirm-Dialog)
             length = int(self.headers.get("Content-Length", 0))
@@ -855,6 +984,8 @@ if __name__ == "__main__":
         MCP_PORT, LLM_MODEL, LLM_BASE_URL, EMBED_MODEL, EMBED_DIM, EMBED_BASE_URL,
     )
     _start_viewer_server()
+    threading.Thread(target=_backup_scheduler, daemon=True, name="backup-scheduler").start()
+    log.info("Backup-Scheduler läuft (Ziel=%s, max=%s)", BACKUP_DIR, MAX_BACKUPS)
 
     # Safety-Net: hat ein Crash mitten im Ingest qwen geladen gelassen (finally
     # lief nicht), bliebe paperless-ai dauerhaft pausiert. Beim Start prüfen und

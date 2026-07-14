@@ -48,10 +48,45 @@ def _status_badge(st: dict) -> str:
     return ""
 
 
-def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: dict | None = None) -> str:
+def _backup_section(cfg: dict, backups: list[dict]) -> str:
+    """Backup-Karte: Schedule-Dropdown, Jetzt-sichern-Button, letzte Archive."""
+    interval = cfg.get("interval", "daily") if cfg.get("enabled") else "off"
+    labels = {"off": "aus", "hourly": "stündlich", "daily": "täglich", "weekly": "wöchentlich"}
+    opts = "".join(f'<option value="{k}"{" selected" if k == interval else ""}>{v}</option>'
+                   for k, v in labels.items())
+    last = cfg.get("last_backup")
+    last_txt = (f"Letztes Backup: {_esc(last.replace('T', ' ')[:16])}" if last
+                else "Noch kein Backup gelaufen")
+    if backups:
+        rows = "\n".join(
+            f'<li><code>{_esc(b["name"])}</code> · {b["size"] / 1024 / 1024:.1f} MB</li>'
+            for b in backups[:5])
+        files = f'<ul class="bk">{rows}</ul>'
+    else:
+        files = '<p class="hint">Noch keine Archive im Backup-Ordner.</p>'
+    return f"""<h2>Backup</h2>
+<div class="steps">
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+    <form method="post" action="/backup/config" style="display:flex;align-items:center;gap:6px;margin:0">
+      <label for="iv">Zeitplan:</label>
+      <select id="iv" name="interval" style="font:inherit;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text)">{opts}</select>
+      <button class="del" type="submit" title="Zeitplan speichern">Speichern</button>
+    </form>
+    <form method="post" action="/backup/now" style="margin:0">
+      <button class="del" type="submit" title="Sofort ein Backup schreiben">Jetzt sichern</button>
+    </form>
+    <span class="hint">{last_txt}</span>
+  </div>
+  {files}
+</div>"""
+
+
+def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: dict | None = None,
+               backup_cfg: dict | None = None, backups: list[dict] | None = None) -> str:
     """Landing-Page für den Viewer-Root. items = (projekt_id, hat_graph_html).
     status = {projekt_id: ingest_status_dict} — zeigt Import-Fortschritt pro Karte.
     meta = {projekt_id: {"project_name": "..."}} — Anzeigenamen.
+    backup_cfg/backups — Backup-Zeitplan und vorhandene Archive.
     Erklärt, was zu sehen ist und wie es weitergeht (statt rohem Dir-Listing)."""
     status = status or {}
     meta = meta or {}
@@ -126,6 +161,7 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
   code{{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:1px 5px}}
   .steps{{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px 22px;font-size:13px;line-height:1.7}}
   .steps ol{{margin:8px 0 0 18px}}
+  .bk{{list-style:none;margin:0;font-size:12px;color:var(--muted)}}
 </style></head><body>
 <h1>doc-graph</h1>
 <p class="sub">Knowledge Graphs aus deinen Dokumenten — pro Projekt ein Graph. Klick ein Projekt an, um den interaktiven Graphen zu öffnen.</p>
@@ -133,6 +169,7 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
 <div class="grid">
 {rows}
 </div>
+{_backup_section(backup_cfg or {}, backups or [])}
 <h2>Wie es weitergeht</h2>
 <div class="steps">
   Neue Dokumente in den Graphen bringen — im Claude-Code-Prompt:

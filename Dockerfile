@@ -16,7 +16,7 @@ RUN pip install -r requirements.txt
 # über den gemounteten Docker-Socket qwen/mistral/paperless-ai steuern.
 COPY --from=docker:cli /usr/local/bin/docker /usr/local/bin/docker
 
-COPY server.py graphview.py swap-to-qwen.sh swap-to-mistral.sh ./
+COPY server.py graphview.py swap-to-qwen.sh swap-to-mistral.sh test_backup.py ./
 
 # Tiktoken-Cache vorab laden, damit der Container offline lauffähig ist
 RUN python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')" || true
