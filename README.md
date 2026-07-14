@@ -98,6 +98,7 @@ mehrzeiligen Panel. Bedienung:
 - **nur Verbundene / Distanz:** Knoten anklicken, dann „nur Verbundene" anhaken —
   zeigt nur dessen Nachbarschaft bis zur eingestellten `Distanz` (Hops). Doppelklick
   setzt den Anker auf einen anderen Knoten um.
+- **← Übersicht:** Link oben links zurück zur Projektübersicht (Landing-Page).
 - **Projekt-Umschalter:** Dropdown oben wechselt zur `graph.html` eines anderen
   Projekts (erscheint ab zwei indexierten Projekten, zeigt optional den Anzeigenamen).
 - **Aktualisieren-Button:** Rendert die graph.html aus dem vorhandenen `.graphml` neu

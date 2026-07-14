@@ -237,6 +237,7 @@ def graph_html(nodes: list[dict], edges: list[dict], title: str,
 <h1>{title}</h1>
 <p class="sub"><span id="cnt">lädt…</span> &nbsp;·&nbsp; ziehen/scrollen zum Navigieren, Knoten/Kante anklicken für Details, Legende anklicken zum Filtern</p>
 <div class="bar">
+  <a href="../" style="text-decoration:none;background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:5px 11px;font-size:12px;white-space:nowrap;transition:all .15s;margin-right:6px" title="Zurück zur Projektübersicht">← Übersicht</a>
   {proj_select}
   <form method="post" action="../refresh" style="margin:0;display:inline;margin-right:6px">
     <input type="hidden" name="project_id" value="{current}">
