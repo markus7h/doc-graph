@@ -252,6 +252,7 @@ def graph_html(nodes: list[dict], edges: list[dict], title: str,
   <label class="muted" title="Knoten anklicken, dann anhaken: zeigt nur dessen Nachbarschaft (Doppelklick setzt Anker um)"><input type="checkbox" id="focus" onchange="setFocus()"> nur Verbundene</label>
   <label class="muted" title="Nachbarschafts-Tiefe in Hops">Distanz <input type="number" id="depth" value="1" min="1" style="width:3em" onchange="build()"></label>
   <span class="muted">Typ-Filter: Legende anklicken</span>
+  <button type="button" onclick="toggleAll()" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:5px 11px;font-size:12px;cursor:pointer;white-space:nowrap;transition:all .15s" title="Alle Typen ein- oder ausblenden">alle an/aus</button>
 </div>
 <div id="netwrap"><div id="net"></div><div id="info"></div></div>
 <div id="leg"></div>
@@ -307,6 +308,11 @@ def graph_html(nodes: list[dict], edges: list[dict], title: str,
   function setFocus(){{FOCUS=$('focus').checked?SEL:null;build();}}  // Anker = aktuelle Auswahl
 
   function toggleType(t){{HIDE.has(t)?HIDE.delete(t):HIDE.add(t);renderLeg();build();}}
+  function toggleAll(){{  // mind. ein Typ sichtbar -> alle aus, sonst alle ein
+    if(HIDE.size<Object.keys(COL).length) Object.keys(COL).forEach(t=>HIDE.add(t));
+    else HIDE.clear();
+    renderLeg();build();
+  }}
   function renderLeg(){{
     $('leg').innerHTML=Object.entries(COL).map(([t,c])=>
       `<span onclick="toggleType('${{esc(t)}}')" style="opacity:${{HIDE.has(t)?0.35:1}}" title="${{HIDE.has(t)?'einblenden':'ausblenden'}}"><i class="dot" style="background:${{c}}"></i>${{esc(t)}}</span>`).join('');

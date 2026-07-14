@@ -104,6 +104,7 @@ mehrzeiligen Panel. Bedienung:
 - **Aktualisieren-Button:** Rendert die graph.html aus dem vorhandenen `.graphml` neu
   (keine LLM-Extraktion, schnell). Nötig z.B. nach `rename_project`.
 - **Umbenennen-Button:** Öffnet ein Eingabefeld für den neuen Anzeigenamen (ersetzt die Notwendigkeit, `rename_project()` im Code aufzurufen).
+- **alle an/aus:** Blendet alle Typen der Legende auf einmal ein bzw. aus (Toggle).
 
 Das Tool gibt die URL zurück:
 
