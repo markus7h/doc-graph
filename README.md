@@ -235,9 +235,12 @@ docker compose -f /var/local/mydocker/doc-graph/docker-compose.yml up -d
   Voraussetzung: `/var/run/docker.sock` ist in den doc-graph-
   Container gemountet (compose) — root-äquivalent auf dem Host, bewusst, das Netz
   ist intern. Abschaltbar via `INGEST_SWAP=0` (z. B. lokale Dev-Umgebung ohne Socket).
-- **Wöchentlicher Modell-Check:** `model_check.sh` (via cron) lässt einen
-  Claude-Agenten read-only recherchieren, ob es ein besseres lokales LLM für die
-  Extraktion gibt als das aktuelle mistral, und schreibt das Ergebnis nach
+- **Wöchentlicher Modell-Check:** `model_check.sh` (via cron) ermittelt das
+  aktuell geladene Extraktions-Modell per `docker exec` am laufenden Chat-Container
+  (`paperless-llama*` ohne `-embed`, `/v1/models`) — der llama-server ist nicht
+  host-gemappt, sondern nur über den internen Netz-Alias `paperless-llama:11434`
+  erreichbar. Der Claude-Agent recherchiert dann read-only, ob es ein besseres
+  lokales LLM als das geladene gibt, und schreibt das Ergebnis nach
   `model_check_report.md` (`EMPFEHLUNG: bleiben` / `EMPFEHLUNG: wechseln zu <tag>`).
 - **EMBED_DIM darf sich nachträglich nicht ändern** — Embedding-Modell pro
   Projekt festnageln, sonst Index neu aufbauen.
