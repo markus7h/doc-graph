@@ -105,6 +105,8 @@ mehrzeiligen Panel. Bedienung:
   (keine LLM-Extraktion, schnell). Nötig z.B. nach `rename_project`.
 - **Umbenennen-Button:** Öffnet ein Eingabefeld für den neuen Anzeigenamen (ersetzt die Notwendigkeit, `rename_project()` im Code aufzurufen).
 - **alle an/aus:** Blendet alle Typen der Legende auf einmal ein bzw. aus (Toggle).
+- **Suche:** Suchfeld oben — Treffer (Teiltreffer im Knotennamen) werden rot hervorgehoben,
+  der erste wird angefahren, der Rest gedimmt. Feld leeren stellt die normale Ansicht wieder her.
 
 Das Tool gibt die URL zurück:
 
@@ -147,6 +149,9 @@ Bedienung komplett über die Viewer-Landing-Page (`http://myubuntu:5776/`):
 - **Zeitplan:** `aus` / `stündlich` / `täglich` / `wöchentlich`, „Speichern" übernimmt.
   Die Einstellung liegt in `<Backup-Ordner>/.config.json` und überlebt Neustarts.
 - **Jetzt sichern:** Schreibt sofort ein Archiv.
+- **Wiederherstellen:** Button an jedem gelisteten Archiv spielt dieses zurück — ersetzt
+  `./data/projects/` komplett durch den Archivstand (Bestätigung im Browser). Der jetzige
+  Stand geht dabei verloren. Nicht während eines Ingests möglich (Konflikt-Meldung).
 
 Verhalten:
 

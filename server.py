@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import tarfile
 import threading
@@ -717,8 +718,6 @@ async def graph_view(project_id: str) -> str:
 def _delete_project_dir(project: str) -> bool:
     """Löscht Index-Verzeichnis + gecachte Instanz (nicht die Quelldokumente).
     True, wenn etwas gelöscht wurde. Validiert gegen Path-Traversal."""
-    import shutil
-
     _validate_project(project)
     _instances.pop(project, None)
     target = PROJECTS_DIR / project
@@ -827,6 +826,30 @@ def _do_backup() -> str:
 
     log.info("Backup geschrieben: %s (%.1f MB)", name, path.stat().st_size / 1024 / 1024)
     return name
+
+
+def _do_restore(name: str) -> None:
+    """Spielt ein Backup zurück: ersetzt PROJECTS_DIR durch den Archivstand.
+    Datenverlust-sicher — erst nach temp extrahieren, dann der alte Stand nur
+    weggemovt (nicht gelöscht), bis der neue drin ist."""
+    path = BACKUP_DIR / name
+    tmp = PROJECTS_DIR.parent / ".restore_tmp"
+    old = PROJECTS_DIR.parent / ".projects_old"
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    with tarfile.open(path, "r:gz") as tar:
+        tar.extractall(tmp, filter="data")  # Python 3.12 -> traversal-sicher
+    new = tmp / "projects"
+    if not new.is_dir():
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise ValueError("Backup enthält kein projects/-Verzeichnis")
+    shutil.rmtree(old, ignore_errors=True)
+    PROJECTS_DIR.rename(old)  # alten Stand erst wegmoven, nicht löschen
+    new.rename(PROJECTS_DIR)
+    shutil.rmtree(old, ignore_errors=True)
+    shutil.rmtree(tmp, ignore_errors=True)
+    _instances.clear()  # gecachte LightRAG-Instanzen zeigen auf den alten Stand
+    log.info("Backup wiederhergestellt: %s", name)
 
 
 def _backup_scheduler() -> None:
@@ -945,6 +968,26 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             if interval != "off":
                 cfg["interval"] = interval
             _save_backup_cfg(cfg)
+            self.send_response(303)
+            self.send_header("Location", "/")
+            self.end_headers()
+            return
+        if self.path == "/backup/restore":
+            if _active_ingests > 0:
+                self.send_error(409, "Ingest laeuft — Restore waere inkonsistent")
+                return
+            length = int(self.headers.get("Content-Length", 0))
+            params = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8"))
+            name = (params.get("name") or [""])[0]
+            if name not in {f.name for f in _list_backup_files()}:  # kein Path-Traversal
+                self.send_error(400, "unbekanntes Backup")
+                return
+            try:
+                _do_restore(name)
+            except Exception:  # noqa: BLE001 — Fehler gehört in die UI, nicht in einen Trace
+                log.exception("Restore fehlgeschlagen")
+                self.send_error(500, "Restore fehlgeschlagen — siehe Server-Log")
+                return
             self.send_response(303)
             self.send_header("Location", "/")
             self.end_headers()

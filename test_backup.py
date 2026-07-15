@@ -51,8 +51,25 @@ def test_rotation_keeps_max_backups():
     assert not (server.BACKUP_DIR / "backup_2020-01-01_00-00-00.tar.gz").exists()
 
 
+def test_restore_roundtrip():
+    marker = _tmp / "projects" / "p1" / "kv_store.json"
+    original = marker.read_text()
+    name = server._do_backup()  # sichert den aktuellen Stand
+
+    marker.write_text('{"zerstoert": true}')        # Bestand verändern
+    (_tmp / "projects" / "p2").mkdir()              # Projekt nach dem Backup anlegen
+
+    server._do_restore(name)
+
+    assert marker.read_text() == original, "alter Inhalt nicht wiederhergestellt"
+    assert not (_tmp / "projects" / "p2").exists(), "nach Backup angelegtes Projekt nicht entfernt"
+    assert not (_tmp / ".restore_tmp").exists(), "temp nicht aufgeräumt"
+    assert not (_tmp / ".projects_old").exists(), "alt-Verzeichnis nicht aufgeräumt"
+
+
 if __name__ == "__main__":
     test_backup_writes_readable_archive()
     test_signature_tracks_changes()
     test_rotation_keeps_max_backups()
-    print("ok — Backup: Archiv lesbar, Signatur reagiert, Rotation greift")
+    test_restore_roundtrip()
+    print("ok — Backup: Archiv lesbar, Signatur reagiert, Rotation greift, Restore-Roundtrip")

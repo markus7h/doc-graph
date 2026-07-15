@@ -59,7 +59,13 @@ def _backup_section(cfg: dict, backups: list[dict]) -> str:
                 else "Noch kein Backup gelaufen")
     if backups:
         rows = "\n".join(
-            f'<li><code>{_esc(b["name"])}</code> · {b["size"] / 1024 / 1024:.1f} MB</li>'
+            f'<li><code>{_esc(b["name"])}</code> · {b["size"] / 1024 / 1024:.1f} MB'
+            f'<form method="post" action="/backup/restore" style="display:inline;margin-left:8px" '
+            f'onsubmit="return confirm(\'Aktuelle Projekte durch dieses Backup ERSETZEN? '
+            f'Der jetzige Stand geht verloren.\')">'
+            f'<input type="hidden" name="name" value="{_esc(b["name"])}">'
+            f'<button class="del" type="submit" title="Dieses Backup zurückspielen">Wiederherstellen</button>'
+            f'</form></li>'
             for b in backups[:5])
         files = f'<ul class="bk">{rows}</ul>'
     else:
@@ -253,6 +259,7 @@ def graph_html(nodes: list[dict], edges: list[dict], title: str,
   <label class="muted" title="Nachbarschafts-Tiefe in Hops">Distanz <input type="number" id="depth" value="1" min="1" style="width:3em" onchange="build()"></label>
   <span class="muted">Typ-Filter: Legende anklicken</span>
   <button type="button" onclick="toggleAll()" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:5px 11px;font-size:12px;cursor:pointer;white-space:nowrap;transition:all .15s" title="Alle Typen ein- oder ausblenden">alle an/aus</button>
+  <input id="q" oninput="applySearch()" placeholder="Knoten suchen…" title="Treffer werden rot hervorgehoben und angefahren" style="font:inherit;font-size:12px;padding:5px 9px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text);width:11em">
 </div>
 <div id="netwrap"><div id="net"></div><div id="info"></div></div>
 <div id="leg"></div>
@@ -263,7 +270,7 @@ def graph_html(nodes: list[dict], edges: list[dict], title: str,
   const COL={{}};                       // Typ -> Farbe (aus den Node-Farben)
   data.nodes.forEach(n=>{{ if(n.group && !(n.group in COL)) COL[n.group]=n.color||'#636363'; }});
   const HIDE=new Set();                 // ausgeblendete Typen (Legende)
-  let net=null, SEL=null, FOCUS=null;   // SEL=angeklickt, FOCUS=Fokus-Anker
+  let net=null, nodesDS=null, SEL=null, FOCUS=null;   // SEL=angeklickt, FOCUS=Fokus-Anker
 
   function showInfo(header, group, body){{
     const chip=group?`<span class="chip" style="background:${{COL[group]||'#636363'}}">${{esc(group)}}</span>`:'';
@@ -290,7 +297,8 @@ def graph_html(nodes: list[dict], edges: list[dict], title: str,
       from:e.from,to:e.to,desc:e.desc,arrows:'to',
       smooth:{{type:'continuous'}},color:{{color:'#ccc'}}}}));
     $('cnt').textContent=`${{nodes.length}} Knoten · ${{edges.length}} Kanten`;
-    const nodesDS=new vis.DataSet(nodes), edgesDS=new vis.DataSet(edges);
+    nodesDS=new vis.DataSet(nodes);
+    const edgesDS=new vis.DataSet(edges);
     net=new vis.Network($('net'),{{nodes:nodesDS,edges:edgesDS}},{{
       physics:{{enabled:$('phys').checked,stabilization:{{iterations:150}},barnesHut:{{gravitationalConstant:-8000,springLength:130}}}},
       interaction:{{hover:true}}}});
@@ -304,8 +312,26 @@ def graph_html(nodes: list[dict], edges: list[dict], title: str,
       if(p.nodes.length&&$('focus').checked){{FOCUS=SEL=p.nodes[0];
         const src=data.nodes.find(x=>x.id===FOCUS);showInfo(src.label,src.group,src.desc);build();}}
     }});
+    applySearch();  // Filter/Fokus-Wechsel behält aktive Suche
   }}
   function setFocus(){{FOCUS=$('focus').checked?SEL:null;build();}}  // Anker = aktuelle Auswahl
+
+  function applySearch(){{  // Treffer rot hervorheben + anfahren, Rest dimmen
+    if(!net||!nodesDS) return;
+    const q=($('q').value||'').trim().toLowerCase();
+    const upd=[]; let first=null;
+    nodesDS.getIds().forEach(id=>{{
+      const src=data.nodes.find(x=>x.id===id);  // ponytail: O(n²), Map bei großen Graphen
+      const base=(src&&src.color)||'#636363';
+      const hit=q&&src&&String(src.label||'').toLowerCase().includes(q);
+      if(hit&&first===null) first=id;
+      upd.push({{id,opacity:(!q||hit)?1:0.15,borderWidth:hit?3:1,
+        color:hit?{{border:'#dd3333',background:base}}:base}});
+    }});
+    nodesDS.update(upd);
+    if(first!==null){{net.selectNodes([first]);net.focus(first,{{scale:1.2,animation:true}});
+      const src=data.nodes.find(x=>x.id===first);if(src)showInfo(src.label,src.group,src.desc);}}
+  }}
 
   function toggleType(t){{HIDE.has(t)?HIDE.delete(t):HIDE.add(t);renderLeg();build();}}
   function toggleAll(){{  // mind. ein Typ sichtbar -> alle aus, sonst alle ein
