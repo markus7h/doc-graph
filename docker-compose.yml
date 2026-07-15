@@ -7,14 +7,14 @@ services:
       - "5775:5775"   # MCP (streamable HTTP)
       - "5776:5776"   # Graph-Viewer (statisches HTML)
     environment:
-      # --- LLM: geteiltes mistral auf dem llama-server (OpenAI-kompatibel).
-      # ZWINGEND dasselbe Modell wie paperless-ai: 16 GB VRAM fassen kein zweites
-      # großes Modell neben dem dauergeladenen mistral. Antworten liefert ohnehin
-      # Claude via only_context. Kontext (num_ctx) wird server-seitig gesetzt (-c). ---
-      LLM_BASE_URL: ${LLM_BASE_URL:-http://paperless-llama:11434/v1}
+      # --- LLM: geteilter llm-stack (OpenAI-kompatibel). Alias 'llm' zeigt immer
+      # auf das AKTIVE Chat-Modell (Normalbetrieb mistral, waehrend des Ingests
+      # qwen — Docker-DNS loest nur laufende Container auf). Antworten liefert
+      # ohnehin Claude via only_context. Kontext server-seitig gesetzt (-c). ---
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://llm:11434/v1}
       LLM_MODEL: ${LLM_MODEL:-mistral-small3.2:24b}
       # --- Embeddings: eigener CPU-llama-server (bge-m3), separater Port ---
-      EMBED_BASE_URL: ${EMBED_BASE_URL:-http://paperless-llama-embed:11435/v1}
+      EMBED_BASE_URL: ${EMBED_BASE_URL:-http://llm-embed:11435/v1}
       EMBED_MODEL: ${EMBED_MODEL:-bge-m3}
       EMBED_DIM: ${EMBED_DIM:-1024}
       # --- Paperless-NGX (Dokumentquelle): via LAN-DNS 'paperless' erreichbar ---
@@ -44,15 +44,15 @@ services:
       # Pfad an den Host anpassen und einkommentieren (Verzeichnis muss existieren,
       # sonst legt Docker es leer als root an); primäre Quelle bleibt Paperless.
       # - /home/markus/dokumente:/data/inputs:ro
-      # GPU-Swap: server.py steuert per swap-to-*.sh die llama-/paperless-ai-
-      # Container (qwen rein/mistral raus) während eines Ingests. Root-äquiv. auf
+      # GPU-Swap: server.py steuert per swap-to-*.sh die llm-stack-Container
+      # (llm-qwen rein/llm-mistral raus) während eines Ingests. Root-äquiv. auf
       # dem Host — bewusst, das Netz ist intern. Abschaltbar via INGEST_SWAP=0.
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
-      # Selbes Netz wie die llama-Server + paperless-ai: löst 'paperless-llama' /
-      # 'paperless-llama-embed' und 'paperless' (NGX via LAN-DNS) auf.
-      - paperless-ai_default
+      # Geteiltes LLM-Netz (gehört dem llm-stack-Compose-Projekt): löst 'llm'
+      # (aktives Chat-Modell) und 'llm-embed' auf. 'paperless' (NGX) via LAN-DNS.
+      - llm-net
 
 networks:
-  paperless-ai_default:
+  llm-net:
     external: true

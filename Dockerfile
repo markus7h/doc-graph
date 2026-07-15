@@ -13,7 +13,7 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 # docker-CLI (nur Client) für den GPU-Swap: server.py ruft swap-to-*.sh, die
-# über den gemounteten Docker-Socket qwen/mistral/paperless-ai steuern.
+# über den gemounteten Docker-Socket llm-mistral/llm-qwen (llm-stack) steuern.
 COPY --from=docker:cli /usr/local/bin/docker /usr/local/bin/docker
 
 COPY server.py graphview.py swap-to-qwen.sh swap-to-mistral.sh test_backup.py ./

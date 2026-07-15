@@ -13,10 +13,10 @@ REPORT="$DIR/model_check_report.md"
 STAMP=$(date '+%Y-%m-%d %H:%M')
 
 # Auf dem llama-server gehostetes Chat-Modell (llama.cpp = ein Modell pro Prozess).
-# Der Chat-Server ist nicht mehr host-gemappt; /v1/models daher containerintern
-# abfragen. Chat-Container = paperless-llama-* ohne -embed. Fehler → leer.
+# Chat-Container = llm-* ohne -embed (llm-mistral bzw. llm-qwen aus dem
+# llm-stack-Compose-Projekt; es läuft immer nur einer). Fehler → leer.
 # ponytail: nimmt den ersten passenden Container; bei mehreren Chat-Containern anpassen.
-CHAT_CTR=$(docker ps --format '{{.Names}}' 2>/dev/null | grep '^paperless-llama' | grep -v embed | head -1)
+CHAT_CTR=$(docker ps --format '{{.Names}}' 2>/dev/null | grep '^llm-' | grep -v embed | head -1)
 MODELS=$(docker exec "$CHAT_CTR" curl -s --max-time 5 http://localhost:11434/v1/models 2>/dev/null \
   | python3 -c 'import sys,json; d=json.load(sys.stdin); print(chr(10).join(m.get("id") or m.get("name","?") for m in (d.get("data") or d.get("models") or [])))' 2>/dev/null \
   || echo "(llama-server nicht erreichbar)")
@@ -27,7 +27,7 @@ Du bist ein wöchentlicher Modell-Check für das Projekt doc-graph. doc-graph ba
 
 Randbedingungen (hart):
 - GPU: RTX 5080, 16 GB VRAM.
-- Der llama-server (Container paperless-llama-*) wird mit paperless-ai geteilt und hält ${MODELS} dauerhaft geladen. Neben dem laufenden Modell passt KEIN zweites großes Modell in 16 GB. Ein Kandidat muss ${MODELS} daher als GEMEINSAMES Modell ablösen (dann nutzen es doc-graph UND paperless-ai) oder klein genug sein, um daneben zu passen (praktisch unmöglich).
+- Der llama-server (Container llm-* aus dem llm-stack) wird mit paperless-ai geteilt und hält ${MODELS} dauerhaft geladen. Neben dem laufenden Modell passt KEIN zweites großes Modell in 16 GB. Ein Kandidat muss ${MODELS} daher als GEMEINSAMES Modell ablösen (dann nutzen es doc-graph UND paperless-ai) oder klein genug sein, um daneben zu passen (praktisch unmöglich).
 - Aufgabe des Modells: Entitäten + Beziehungen aus deutschen Behörden-/Rechts-/Geschäftsdokumenten extrahieren; hohe Instruktionstreue, sauberes strukturiertes Format.
 
 Aktuell geladenes Modell (llama-server /v1/models):

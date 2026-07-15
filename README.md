@@ -26,17 +26,19 @@ Multi-Projekt hieße dort ein Container pro Projekt. Hier verwaltet der
 MCP-Server stattdessen selbst eine lazy geladene LightRAG-Instanz pro
 `working_dir`, Projektname ist einfach ein Tool-Parameter.
 
-## Modell: geteiltes mistral-small3.2:24b
+## Modell: geteilter llm-stack
 
-Extraktion und Embeddings laufen über die **mit paperless-ai geteilten
-llama-server-Container**: Extraktion via `paperless-llama` (`mistral-small3.2:24b`,
-GPU) + Embeddings via `paperless-llama-embed` (`bge-m3`, CPU, 1024-dim).
+Extraktion und Embeddings laufen über den **geteilten llm-stack** (eigenes
+Compose-Projekt, Repo `llm-stack`): Extraktion via Netz-Alias `llm` (zeigt auf
+das aktive Chat-Modell — Normalbetrieb `llm-mistral`/`mistral-small3.2:24b`,
+während des Ingests `llm-qwen`/`qwen3-14b`) + Embeddings via `llm-embed`
+(`bge-m3`, CPU, 1024-dim).
 
 Warum geteilt statt eigenes Modell: Auf ~16 GB VRAM (RTX 5080, geteilt mit dem
-Desktop) hält paperless-ai mistral dauerhaft im GPU-Speicher (`paperless-llama`,
-`-c 32768`, partial offload `-ngl 27`, ~12–13 GB). Ein zweites großes Modell
-daneben führt zu OOM (empirisch: `qwen3:14b` → Exit 137). doc-graph nutzt daher
-denselben llama-server. Die eigentliche **Antwortformulierung
+Desktop) läuft mistral dauergeladen (`-c 32768`, partial offload `-ngl 27`,
+~12–13 GB). Ein zweites großes Modell daneben führt zu OOM (empirisch:
+`qwen3:14b` → Exit 137) — deshalb läuft immer nur EIN Chat-Modell, Wechsel per
+stop/start. Die eigentliche **Antwortformulierung
 übernimmt ohnehin Claude** (via `only_context=True` liefert LightRAG nur die
 Roh-Chunks/Entitäten) — das lokale Modell ist nur für Extraktion und
 Kontext-Retrieval zuständig.
@@ -44,10 +46,10 @@ Kontext-Retrieval zuständig.
 ## Setup
 
 ```bash
-# Voraussetzung: die llama-server-Container von paperless-ai (paperless-llama,
-# paperless-llama-embed) laufen bereits auf demselben Host (myubuntu/RTX 5080) —
-# doc-graph nutzt sie mit, kein eigener Modell-Download nötig (GGUF wird beim
-# Start der paperless-ai-Container automatisch via `-hf` von Hugging Face geladen).
+# Voraussetzung: der llm-stack (Repo llm-stack: llm-mistral, llm-qwen, llm-embed)
+# läuft bereits auf demselben Host (myubuntu/RTX 5080) — doc-graph nutzt ihn mit,
+# kein eigener Modell-Download nötig (GGUF wird beim Start der llm-stack-Container
+# automatisch via `-hf` von Hugging Face geladen).
 
 # Im Run-Verzeichnis (/var/local/mydocker/doc-graph):
 cp .env.example .env   # PAPERLESS_TOKEN eintragen
@@ -68,9 +70,9 @@ Der Daten-Mount in `docker-compose.yml` ist ein **absoluter Pfad**
 `./data` mounten — der Index wäre „weg" und alle Queries lieferten no-context.
 Der kanonische Datenort ist immer das Deploy-Verzeichnis.
 
-Das externe Docker-Netz `paperless-ai_default` verbindet doc-graph mit
-`paperless-llama` (mistral) und `paperless-llama-embed` (bge-m3) sowie
-`paperless` (NGX via LAN-DNS) — dieselben Namen wie paperless-ai. Bei
+Das externe Docker-Netz `llm-net` (gehört dem llm-stack-Compose-Projekt)
+verbindet doc-graph mit `llm` (aktives Chat-Modell) und `llm-embed` (bge-m3);
+`paperless` (NGX) kommt via LAN-DNS. Bei
 abweichendem Setup den Netzwerk-Block in `docker-compose.yml` anpassen oder
 `PAPERLESS_URL=https://<host>/` (bzw. `http://<IP>:8010`) verwenden. Der
 compose-Default ist `https://paperless/`; der Client akzeptiert das
@@ -230,10 +232,12 @@ docker compose -f /var/local/mydocker/doc-graph/docker-compose.yml up -d
   CPU-Offload in die 16 GB (13/40 Layer im RAM → langsam, Extraktions-Timeouts).
   Da paperless-ai selten läuft, teilt man die GPU **zeitlich**. Das passiert jetzt
   **automatisch bei jedem Ingest**: sobald `ingest_paperless`/`ingest_directory`
-  Dokumente extrahiert, ruft der Server `swap-to-qwen.sh` (mistral stoppen,
-  paperless-ai pausieren, qwen3-14b Q5_K_M **voll auf die GPU** unter dem Netz-Alias
-  `paperless-llama`); nach Abschluss `swap-to-mistral.sh` (zurück auf mistral +
-  paperless-ai). Paralleler Ingest über mehrere Projekte swappt per Refcount nur
+  Dokumente extrahiert, ruft der Server `swap-to-qwen.sh` (`docker stop llm-mistral`
+  + `docker start llm-qwen`; beide teilen den Netz-Alias `llm`, LLM_BASE_URL bleibt
+  unverändert); nach Abschluss `swap-to-mistral.sh` (zurück auf mistral). paperless-ai
+  wird dabei NICHT mehr pausiert — es ist auf `llm-mistral` gepinnt und bekommt nie
+  qwen-Antworten; seine UI zeigt während des Swaps „Modell offline".
+  Paralleler Ingest über mehrere Projekte swappt per Refcount nur
   einmal rein/raus; ein Crash mitten im Ingest wird beim nächsten Serverstart
   zurückgeswappt. Inserts laufen global serialisiert (LightRAG-Instanzen teilen
   den Pipeline-Lock — paralleles `ainsert` kehrt sonst unverarbeitet zurück), und
@@ -244,9 +248,7 @@ docker compose -f /var/local/mydocker/doc-graph/docker-compose.yml up -d
   ist intern. Abschaltbar via `INGEST_SWAP=0` (z. B. lokale Dev-Umgebung ohne Socket).
 - **Wöchentlicher Modell-Check:** `model_check.sh` (via cron) ermittelt das
   aktuell geladene Extraktions-Modell per `docker exec` am laufenden Chat-Container
-  (`paperless-llama*` ohne `-embed`, `/v1/models`) — der llama-server ist nicht
-  host-gemappt, sondern nur über den internen Netz-Alias `paperless-llama:11434`
-  erreichbar. Der Claude-Agent recherchiert dann read-only, ob es ein besseres
+  (`llm-*` ohne `-embed`, `/v1/models`) ab. Der Claude-Agent recherchiert dann read-only, ob es ein besseres
   lokales LLM als das geladene gibt, und schreibt das Ergebnis nach
   `model_check_report.md` (`EMPFEHLUNG: bleiben` / `EMPFEHLUNG: wechseln zu <tag>`).
 - **EMBED_DIM darf sich nachträglich nicht ändern** — Embedding-Modell pro

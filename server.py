@@ -131,11 +131,13 @@ _ingest_status: dict[str, dict] = {}
 _insert_lock = asyncio.Lock()
 
 # ----------------------------------------------------------------------------
-# GPU-Swap: für die Dauer eines Ingests qwen3-14b VOLL auf die GPU, mistral +
-# paperless-ai pausieren (sonst nur Teil-GPU-Offload -> langsam/Timeouts).
-# swap-to-*.sh liegen im Image und steuern via gemountetem Docker-Socket die
-# llama-/paperless-ai-Container. Refcount unter Lock: paralleler Ingest über
-# mehrere Projekte swappt nur EINMAL rein/raus.
+# GPU-Swap: für die Dauer eines Ingests qwen3-14b VOLL auf die GPU, mistral raus
+# (sonst nur Teil-GPU-Offload -> langsam/Timeouts). Beide sind Services im
+# llm-stack-Compose-Projekt mit geteiltem Netz-Alias 'llm' — LLM_BASE_URL bleibt
+# beim Wechsel unverändert. swap-to-*.sh liegen im Image und steuern via
+# gemountetem Docker-Socket llm-mistral/llm-qwen (stop/start, kein pause mehr:
+# paperless-ai ist auf llm-mistral gepinnt und bekommt nie qwen-Antworten).
+# Refcount unter Lock: paralleler Ingest über mehrere Projekte swappt EINMAL.
 # ponytail: globaler Lock reicht — Ingests laufen selten und selten parallel.
 # INGEST_SWAP=0 schaltet den Swap ab (lokale Dev-Umgebung ohne Docker-Socket).
 SWAP_ENABLED = os.environ.get("INGEST_SWAP", "1") == "1"
@@ -158,18 +160,18 @@ async def _swap_begin() -> None:
     async with _swap_lock:
         _active_ingests += 1
         if _active_ingests == 1:
-            log.info("GPU-Swap: qwen laden, paperless-ai pausieren…")
+            log.info("GPU-Swap: mistral raus, qwen laden…")
             await asyncio.to_thread(_run_swap, "swap-to-qwen.sh")
 
 async def _swap_end() -> None:
-    """Nach dem letzten laufenden Ingest zurück zu mistral + paperless-ai."""
+    """Nach dem letzten laufenden Ingest zurück zu mistral."""
     global _active_ingests
     if not SWAP_ENABLED:
         return
     async with _swap_lock:
         _active_ingests = max(0, _active_ingests - 1)
         if _active_ingests == 0:
-            log.info("GPU-Swap: zurück auf mistral, paperless-ai fortsetzen…")
+            log.info("GPU-Swap: zurück auf mistral…")
             await asyncio.to_thread(_run_swap, "swap-to-mistral.sh")
 
 
@@ -1031,12 +1033,13 @@ if __name__ == "__main__":
     log.info("Backup-Scheduler läuft (Ziel=%s, max=%s)", BACKUP_DIR, MAX_BACKUPS)
 
     # Safety-Net: hat ein Crash mitten im Ingest qwen geladen gelassen (finally
-    # lief nicht), bliebe paperless-ai dauerhaft pausiert. Beim Start prüfen und
-    # zurückswappen. ponytail: rechtfertigt sich, weil sonst paperless-ai hängt.
+    # lief nicht), bliebe mistral gestoppt und paperless-ai ohne LLM. Beim Start
+    # prüfen und zurückswappen. llm-qwen EXISTIERT immer als gestoppter Container
+    # (llm-stack legt ihn an) — daher explizit auf status=running filtern.
     if SWAP_ENABLED:
         try:
             r = subprocess.run(
-                ["docker", "ps", "-q", "-f", "name=paperless-llama-qwen"],
+                ["docker", "ps", "-q", "-f", "name=^llm-qwen$", "-f", "status=running"],
                 capture_output=True, text=True, timeout=30,
             )
             if r.stdout.strip():
