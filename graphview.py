@@ -55,6 +55,37 @@ def _status_badge(st: dict) -> str:
     return ""
 
 
+def _progress_row(st: dict) -> str:
+    """Vollbreite Fortschrittszeile für einen laufenden/pausierten Ingest:
+    Balken (done/total) + Status-Badge. Ersetzt das gequetschte Inline-Badge."""
+    done = st.get("done", 0)
+    total = st.get("total") if isinstance(st.get("total"), int) else 0
+    pct = int(done / total * 100) if total else 0
+    fill_cls = "fill paused" if st.get("state") == "paused" else "fill"
+    return (f'<div class="prog"><div class="bar"><div class="{fill_cls}" '
+            f'style="width:{pct}%"></div></div>{_status_badge(st)}</div>')
+
+
+# doc-graph-Icon (Variante 2): grünes Dokument mit Textzeilen + herausragendem
+# Graph-Netzwerk. Inline-SVG, damit ohne externe Assets/CDN.
+_LOGO = (
+    '<svg class="logo" viewBox="0 0 56 48" width="42" height="36" aria-hidden="true">'
+    '<defs><linearGradient id="dg" x1="0" y1="0" x2="1" y2="1">'
+    '<stop offset="0" stop-color="#43a047"/><stop offset="1" stop-color="#2e7d32"/>'
+    '</linearGradient></defs>'
+    '<path d="M4 8a4 4 0 0 1 4-4h18l8 8v22a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4z" fill="url(#dg)"/>'
+    '<path d="M26 4l8 8h-8z" fill="#fff" opacity=".35"/>'
+    '<g stroke="#fff" stroke-width="2.4" stroke-linecap="round" opacity=".9">'
+    '<line x1="9" y1="15" x2="21" y2="15"/><line x1="9" y1="21" x2="19" y2="21"/>'
+    '<line x1="9" y1="27" x2="17" y2="27"/></g>'
+    '<g stroke="#8bc34a" stroke-width="2.6" stroke-linecap="round">'
+    '<line x1="31" y1="29" x2="43" y2="18"/><line x1="31" y1="29" x2="49" y2="32"/></g>'
+    '<circle cx="31" cy="29" r="4.5" fill="#fff"/>'
+    '<circle cx="43" cy="18" r="4" fill="#1b5e20"/>'
+    '<circle cx="49" cy="32" r="4.5" fill="#8bc34a"/></svg>'
+)
+
+
 def _backup_time(name: str) -> str:
     """'backup_2026-07-16_14-30-05.tar.gz' -> '2026-07-16 14:30' (Fallback: Name)."""
     m = re.search(r"(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})", name)
@@ -155,7 +186,11 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
         m = meta.get(p, {})
         display_name = m.get("project_name") or p
         st = status.get(p, {})
-        badge = _status_badge(st)
+        state = st.get("state")
+        live = state in ("running", "paused")
+        # Laufender/pausierter Ingest bekommt eine eigene Fortschrittszeile unten;
+        # abgeschlossene/fehlerhafte Zustände bleiben als kompaktes Inline-Badge.
+        badge = "" if live else _status_badge(st)
         n = counts.get(p)
         docs = f'<span class="hint">{n} Dokument{"" if n == 1 else "e"}</span>' if n else ""
         left = (f'<a class="nm open" href="./{e}/graph.html">{_esc(display_name)}'
@@ -178,7 +213,6 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
                       f'<input type="hidden" name="project_id" value="{e}">'
                       '<button title="Projekt-Index löschen">Löschen</button></form>')
         # Pause/Fortsetzen + Stop nur, solange ein Ingest läuft oder pausiert ist.
-        state = st.get("state")
         if state == "running":
             control_forms = _ctl_form(e, "pause", "Pause") + _ctl_form(e, "stop", "Stop")
         elif state == "paused":
@@ -188,8 +222,9 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
         backup_forms = _card_backup(e, project_backups.get(p, []))
         forms = control_forms + refresh_form + rename_form + backup_forms + delete_form
         cls = "card" if has else "card todo"
-        return (f'<div class="{cls}"><div class="left">{left}</div>'
-                f'<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">{forms}</div></div>')
+        progress = _progress_row(st) if live else ""
+        return (f'<div class="{cls}"><div class="cardhead"><div class="left">{left}</div>'
+                f'<div class="actions">{forms}</div></div>{progress}</div>')
 
     if items:
         rows = "\n".join(_row(p, has) for p, has in items)
@@ -211,12 +246,23 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
   h1{{font-size:22px;font-weight:700;margin-bottom:4px}}
   .sub{{color:var(--muted);font-size:13px;margin-bottom:24px}}
   h2{{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 12px}}
+  .brand{{display:flex;align-items:center;gap:12px;margin-bottom:4px}}
+  .brand h1{{margin:0}}
+  .logo{{flex:none}}
   .grid{{display:grid;gap:10px;margin-bottom:28px}}
-  .card{{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  .card{{display:flex;flex-direction:column;
     background:var(--card);border:1px solid var(--border);border-left:3px solid var(--accent);
     border-radius:10px;padding:14px 18px;transition:box-shadow .15s}}
+  .cardhead{{display:flex;align-items:center;justify-content:space-between;gap:12px}}
+  .actions{{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}}
   .card:hover{{box-shadow:0 3px 14px rgba(0,0,0,.08)}}
   .card.todo{{border-left-color:#bbb}}
+  .prog{{display:flex;align-items:center;gap:12px;margin-top:12px;padding-top:12px;
+    border-top:1px solid var(--border)}}
+  .prog .bar{{flex:1;height:7px;background:var(--bg);border:1px solid var(--border);
+    border-radius:20px;overflow:hidden}}
+  .prog .fill{{height:100%;background:var(--accent);border-radius:20px;transition:width .4s ease}}
+  .prog .fill.paused{{background:#ffb300}}
   .left{{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;min-width:0}}
   .nm{{font-weight:600;font-size:15px;color:var(--text);text-decoration:none}}
   a.nm.open:hover .go{{text-decoration:underline}}
@@ -238,7 +284,7 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
   .bktime{{font-weight:600;color:var(--text);min-width:120px}}
   .bksize{{flex:1;color:var(--muted)}}
 </style></head><body>
-<h1>doc-graph</h1>
+<div class="brand">{_LOGO}<h1>doc-graph</h1></div>
 <p class="sub">Knowledge Graphs aus deinen Dokumenten — pro Projekt ein Graph. Klick ein Projekt an, um den interaktiven Graphen zu öffnen.</p>
 <h2>Projekte</h2>
 <div class="grid">

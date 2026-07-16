@@ -121,7 +121,9 @@ indexierten Projekte als Karten mit ihrem Anzeigenamen (falls gesetzt) und der
 **Anzahl indexierter Dokumente** (aus dem Ingest-Manifest). Klick öffnet
 den Graphen. Läuft gerade ein `ingest_paperless`, trägt die betroffene Karte ein
 **Import-Status-Badge** (⏳ läuft `done/total` / ⏸ pausiert / ⏹ abgebrochen /
-✓ zuletzt indexiert / ✗ Fehler).
+✓ zuletzt indexiert / ✗ Fehler). Bei laufendem/pausiertem Import rutscht das Badge
+in eine eigene, vollbreite Fortschrittszeile unter den Buttons — mit **Fortschrittsbalken**
+(`done/total`, grün; gelb bei Pause) statt gequetscht neben den Aktionen.
 Dokumente werden einzeln extrahiert (Zähler pro fertigem Dokument); zusätzlich zeigt das
 Badge LightRAGs aktuelle Live-Meldung (z.B. „Chunk 5 of 26 extracted …"), sodass man
 den Fortschritt auch innerhalb eines langen Dokuments sieht. Bei laufendem oder
