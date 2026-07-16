@@ -117,7 +117,8 @@ http://myubuntu:5776/<project_id>/graph.html
 ```
 
 Der Viewer-Root (`http://myubuntu:5776/`) zeigt eine Landing-Page: alle
-indexierten Projekte als Karten mit ihrem Anzeigenamen (falls gesetzt). Klick öffnet
+indexierten Projekte als Karten mit ihrem Anzeigenamen (falls gesetzt) und der
+**Anzahl indexierter Dokumente** (aus dem Ingest-Manifest). Klick öffnet
 den Graphen. Läuft gerade ein `ingest_paperless`, trägt die betroffene Karte ein
 **Import-Status-Badge** (⏳ läuft `done/total` / ⏸ pausiert / ⏹ abgebrochen /
 ✓ zuletzt indexiert / ✗ Fehler).

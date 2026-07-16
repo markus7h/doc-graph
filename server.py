@@ -970,8 +970,10 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
                     meta[proj_id] = _load_meta(proj_id)
             backups = [{"name": f.name, "size": f.stat().st_size, "mtime": f.stat().st_mtime}
                        for f in _list_backup_files()]
+            # Anzahl indexierter Dokumente je Projekt aus dem Ingest-Manifest.
+            counts = {p: len(_load_manifest(p)) for p in rendered}
             body = index_html(items, _ingest_status, meta,
-                              _load_backup_cfg(), backups, notice).encode("utf-8")
+                              _load_backup_cfg(), backups, notice, counts).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))

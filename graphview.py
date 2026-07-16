@@ -128,14 +128,16 @@ function restoreFromFile(inp){{
 
 def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: dict | None = None,
                backup_cfg: dict | None = None, backups: list[dict] | None = None,
-               notice: str | None = None) -> str:
+               notice: str | None = None, counts: dict | None = None) -> str:
     """Landing-Page für den Viewer-Root. items = (projekt_id, hat_graph_html).
     status = {projekt_id: ingest_status_dict} — zeigt Import-Fortschritt pro Karte.
     meta = {projekt_id: {"project_name": "..."}} — Anzeigenamen.
+    counts = {projekt_id: anzahl_indexierter_dokumente} — pro Karte angezeigt.
     backup_cfg/backups — Backup-Zeitplan und vorhandene Archive.
     Erklärt, was zu sehen ist und wie es weitergeht (statt rohem Dir-Listing)."""
     status = status or {}
     meta = meta or {}
+    counts = counts or {}
     # Auto-Refresh auch bei 'paused', damit Fortsetzen/Fortschritt sichtbar wird.
     running = any(s.get("state") in ("running", "paused") for s in status.values())
 
@@ -151,10 +153,12 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
         display_name = m.get("project_name") or p
         st = status.get(p, {})
         badge = _status_badge(st)
+        n = counts.get(p)
+        docs = f'<span class="hint">{n} Dokument{"" if n == 1 else "e"}</span>' if n else ""
         left = (f'<a class="nm open" href="./{e}/graph.html">{_esc(display_name)}'
                 '<span class="go"> · Graph öffnen →</span></a>' if has else
                 f'<span class="nm">{_esc(display_name)}</span>'
-                f'<span class="hint">noch nicht gerendert</span>') + badge
+                f'<span class="hint">noch nicht gerendert</span>') + docs + badge
         # Buttons: Erstellen/Aktualisieren (POST /refresh) + Umbenennen + Löschen
         refresh_form = (f'<form method="post" action="/refresh" class="del" style="margin-right:6px">'
                        f'<input type="hidden" name="project_id" value="{e}">'
