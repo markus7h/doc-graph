@@ -39,12 +39,12 @@ def test_color_deterministic():
 def test_index_html():
     html = index_html([("fehmarn", True), ("bö<se", False)])
     assert 'href="./fehmarn/graph.html"' in html          # gerendertes Projekt verlinkt
-    assert 'graph_view("bö&lt;se")' in html                # todo-Projekt: Name escaped, kein Link
-    assert 'href="./bö' not in html
-    # Löschen: jede Karte hat ein Delete-Form mit escaptem Projektnamen
+    assert "noch nicht gerendert" in html                  # todo-Projekt ohne Link
+    assert 'bö&lt;se' in html and 'href="./bö' not in html  # Name escaped, kein Link
+    # Löschen: jede Karte hat ein Delete-Form mit escaptem project_id
     assert html.count('action="/delete"') == 2
-    assert '<input type="hidden" name="project" value="fehmarn">' in html
-    assert '<input type="hidden" name="project" value="bö&lt;se">' in html
+    assert '<input type="hidden" name="project_id" value="fehmarn">' in html
+    assert '<input type="hidden" name="project_id" value="bö&lt;se">' in html
     assert "Noch keine Projekte" in index_html([])         # Leerzustand
 
 
@@ -54,6 +54,16 @@ def test_index_status():
     h = index_html([("fehmarn", True)], st)
     assert "Ingest läuft" in h and "7/28" in h
     assert 'http-equiv="refresh"' in h                      # pollt nur bei running
+    # running -> Pause- und Stop-Button (aber kein Fortsetzen)
+    assert 'value="pause"' in h and 'value="stop"' in h and 'value="resume"' not in h
+    # paused -> Auto-Refresh bleibt, Badge + Fortsetzen/Stop statt Pause
+    hp = index_html([("fehmarn", True)], {"fehmarn": {"state": "paused", "done": 7, "total": 28}})
+    assert "pausiert" in hp and 'http-equiv="refresh"' in hp
+    assert 'value="resume"' in hp and 'value="stop"' in hp and 'value="pause"' not in hp
+    # stopped -> Badge, kein Auto-Refresh, keine Steuer-Buttons mehr
+    hs = index_html([("fehmarn", True)], {"fehmarn": {"state": "stopped", "done": 7, "total": 28}})
+    assert "abgebrochen" in hs and 'http-equiv="refresh"' not in hs
+    assert 'action="/ingest/control"' not in hs
     # done/error: kein Auto-Refresh, aber Badge sichtbar
     h2 = index_html([("fehmarn", True)], {"fehmarn": {"state": "done", "new": 0, "updated": 28}})
     assert "zuletzt indexiert" in h2 and 'http-equiv="refresh"' not in h2

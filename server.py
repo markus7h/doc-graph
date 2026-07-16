@@ -122,6 +122,10 @@ _init_lock = asyncio.Lock()
 # Status laufender/letzter Ingests je Projekt (in-memory; ponytail: bei
 # Neustart weg -> nicht gespeicherter Manifest sorgt für Re-Ingest, unkritisch).
 _ingest_status: dict[str, dict] = {}
+# Kooperative Steuerung eines laufenden Ingests: project_id -> "pause" | "stop".
+# Vom HTTP-Thread/MCP-Handler gesetzt, vom Ingest-Loop zwischen zwei Dokumenten
+# gelesen (einzelne Dict-Zuweisung -> GIL genügt, kein Lock).
+_ingest_control: dict[str, str] = {}
 
 # LightRAG-Instanzen teilen im selben Prozess den pipeline_status-Lock: läuft
 # die Pipeline von Projekt A, kehrt ainsert() von Projekt B SOFORT zurück
@@ -491,12 +495,35 @@ async def ingest_paperless(
         done = 0
         stop = asyncio.Event()
         poller = asyncio.create_task(_poll_msg(stop))
+        # ponytail-Invariante: swapped == "ein _swap_begin ohne passendes _swap_end
+        # offen". Jeder begin bekommt genau ein end (finally oder Pause), sonst
+        # leckt der Refcount und die GPU bleibt bei qwen hängen.
+        swapped = False
         try:
             # Swap läuft im Hintergrund-Task (nicht im MCP-Handler) -> kein
             # MCP-Timeout, während qwen lädt. Bei Swap-Fehler bricht der Ingest
             # kontrolliert ab; das finally swappt zurück.
             await _swap_begin()
+            swapped = True
             for doc_key, text, h in pending:
+                # Pause/Stop kooperativ ZWISCHEN zwei Dokumenten — das laufende
+                # Doc wird fertig, Manifest ist je Doc gesichert (kein Datenverlust).
+                while _ingest_control.get(project_id) == "pause":
+                    if swapped:  # GPU freigeben: mistral zurück für paperless-ai
+                        await _swap_end()
+                        swapped = False
+                    _ingest_status[project_id]["state"] = "paused"
+                    await asyncio.sleep(1)
+                if _ingest_control.get(project_id) == "stop":
+                    _ingest_status[project_id] = {
+                        "state": "stopped", "done": done, "total": total, "new": new,
+                        "updated": updated, "skipped": skipped, "at": _now(),
+                    }
+                    break
+                if not swapped:  # Resume nach Pause: qwen wieder laden
+                    await _swap_begin()
+                    swapped = True
+                    _ingest_status[project_id]["state"] = "running"
                 async with _insert_lock:
                     await rag.ainsert([text], ids=[doc_key])
                 # Guard: Hash nur ins Manifest, wenn LightRAG das Doc wirklich
@@ -508,10 +535,12 @@ async def ingest_paperless(
                     log.warning("Doc %s nicht 'processed' nach ainsert — bleibt für Re-Ingest offen", doc_key)
                 done += 1
                 _ingest_status[project_id]["done"] = done  # in-place: Poller-Feld bleibt
-            _ingest_status[project_id] = {
-                "state": "done", "done": done, "total": total, "new": new,
-                "updated": updated, "skipped": skipped, "at": _now(),
-            }
+            else:
+                # for..else: nur wenn NICHT via break gestoppt -> regulär fertig.
+                _ingest_status[project_id] = {
+                    "state": "done", "done": done, "total": total, "new": new,
+                    "updated": updated, "skipped": skipped, "at": _now(),
+                }
         except Exception as e:  # noqa: BLE001 — Status festhalten, nicht crashen
             log.exception("Ingest fehlgeschlagen für %s", project_id)
             _ingest_status[project_id] = {
@@ -520,8 +549,11 @@ async def ingest_paperless(
         finally:
             stop.set()
             poller.cancel()
-            await _swap_end()
+            if swapped:
+                await _swap_end()
+            _ingest_control.pop(project_id, None)
 
+    _ingest_control.pop(project_id, None)  # evtl. altes pause/stop verwerfen
     task = asyncio.create_task(_run())
     _ingest_status[project_id] = {
         "state": "running", "done": 0, "total": total, "new": new,
@@ -549,6 +581,31 @@ async def ingest_status(project_id: str) -> str:
     if docs:
         out["docs"] = docs
     return json.dumps(out, ensure_ascii=False)
+
+
+@mcp.tool()
+async def ingest_control(project_id: str, action: str) -> str:
+    """Steuert einen laufenden ingest_paperless-Lauf.
+
+    'pause' hält nach dem aktuellen Dokument an und gibt die GPU frei (mistral
+    zurück für paperless-ai). 'resume' lädt qwen neu und macht weiter. 'stop'
+    bricht ab — bereits Indexiertes bleibt im Graph.
+
+    Args:
+        project_id: technischer Projekt-Schlüssel.
+        action: 'pause' | 'resume' | 'stop'.
+    """
+    project_id = _validate_project(project_id)
+    if action not in ("pause", "resume", "stop"):
+        return "Fehler: action muss 'pause', 'resume' oder 'stop' sein."
+    state = _ingest_status.get(project_id, {}).get("state")
+    if state not in ("running", "paused"):
+        return f"Projekt '{project_id}': kein laufender Ingest (Status: {state or 'keiner'})."
+    if action == "resume":
+        _ingest_control.pop(project_id, None)
+    else:
+        _ingest_control[project_id] = action
+    return f"Projekt '{project_id}': '{action}' vorgemerkt — greift nach dem aktuellen Dokument."
 
 
 def _extract_text(f: Path) -> str | None:
@@ -772,6 +829,8 @@ async def delete_project(project_id: str, confirm: bool = False) -> str:
 # ----------------------------------------------------------------------------
 BACKUP_INTERVALS = {"hourly": 3600, "daily": 86400, "weekly": 604800}
 _BACKUP_CONFIG = BACKUP_DIR / ".config.json"
+# Obergrenze für hochgeladene Restore-Archive (Projektdaten inkl. Embeddings).
+MAX_RESTORE_UPLOAD = int(os.environ.get("MAX_RESTORE_UPLOAD", str(2 * 1024**3)))
 
 
 def _load_backup_cfg() -> dict:
@@ -831,10 +890,14 @@ def _do_backup() -> str:
 
 
 def _do_restore(name: str) -> None:
-    """Spielt ein Backup zurück: ersetzt PROJECTS_DIR durch den Archivstand.
+    """Restore aus einem Archiv im BACKUP_DIR (per Name aus der Liste)."""
+    _do_restore_path(BACKUP_DIR / name)
+
+
+def _do_restore_path(path: Path) -> None:
+    """Spielt ein Backup-Archiv zurück: ersetzt PROJECTS_DIR durch den Archivstand.
     Datenverlust-sicher — erst nach temp extrahieren, dann der alte Stand nur
     weggemovt (nicht gelöscht), bis der neue drin ist."""
-    path = BACKUP_DIR / name
     tmp = PROJECTS_DIR.parent / ".restore_tmp"
     old = PROJECTS_DIR.parent / ".projects_old"
     shutil.rmtree(tmp, ignore_errors=True)
@@ -851,7 +914,7 @@ def _do_restore(name: str) -> None:
     shutil.rmtree(old, ignore_errors=True)
     shutil.rmtree(tmp, ignore_errors=True)
     _instances.clear()  # gecachte LightRAG-Instanzen zeigen auf den alten Stand
-    log.info("Backup wiederhergestellt: %s", name)
+    log.info("Backup wiederhergestellt: %s", path.name)
 
 
 def _backup_scheduler() -> None:
@@ -883,7 +946,14 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
     Dir-Listing. ponytail: nur '/', '/refresh', '/delete' abgefangen, Rest bleibt stdlib-static."""
 
     def do_GET(self):  # noqa: N802 (stdlib-Signatur)
-        if self.path in ("/", "/index.html"):
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path in ("/", "/index.html"):
+            q = urllib.parse.parse_qs(parsed.query)
+            notice = None
+            if q.get("backup"):
+                notice = f"backup:{q['backup'][0]}"
+            elif q.get("restore"):
+                notice = f"restore:{q['restore'][0]}"
             rendered = {
                 p.name: (p / "graph.html").exists()
                 for p in PROJECTS_DIR.iterdir()
@@ -901,7 +971,7 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             backups = [{"name": f.name, "size": f.stat().st_size, "mtime": f.stat().st_mtime}
                        for f in _list_backup_files()]
             body = index_html(items, _ingest_status, meta,
-                              _load_backup_cfg(), backups).encode("utf-8")
+                              _load_backup_cfg(), backups, notice).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -948,6 +1018,12 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             if _active_ingests > 0:
                 self.send_error(409, "Ingest laeuft — Backup waere unvollstaendig")
                 return
+            # Nur sichern, wenn sich seit dem letzten Backup etwas geändert hat.
+            if _load_backup_cfg().get("last_backup_signature") == _projects_signature():
+                self.send_response(303)
+                self.send_header("Location", "/?backup=nochange")
+                self.end_headers()
+                return
             try:
                 _do_backup()
             except Exception:  # noqa: BLE001 — Fehler gehört in die UI, nicht in einen 500er-Trace
@@ -955,7 +1031,32 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
                 self.send_error(500, "Backup fehlgeschlagen — siehe Server-Log")
                 return
             self.send_response(303)
-            self.send_header("Location", "/")
+            self.send_header("Location", "/?backup=ok")
+            self.end_headers()
+            return
+        if self.path == "/backup/restore-upload":
+            # Restore aus per Datei-Dialog hochgeladenem Archiv (roher Body, kein
+            # multipart — JS postet die Datei-Bytes direkt, siehe _backup_section).
+            if _active_ingests > 0:
+                self.send_error(409, "Ingest laeuft — Restore waere inkonsistent")
+                return
+            length = int(self.headers.get("Content-Length", 0))
+            if length <= 0 or length > MAX_RESTORE_UPLOAD:
+                self.send_error(400, "leerer oder zu großer Upload")
+                return
+            BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+            tmp = BACKUP_DIR / ".upload_restore.tar.gz"
+            try:
+                tmp.write_bytes(self.rfile.read(length))
+                _do_restore_path(tmp)  # validiert Format + projects/-Verzeichnis
+            except Exception:  # noqa: BLE001 — meist ungültige Datei; in die UI, nicht 500
+                log.exception("Restore aus Upload fehlgeschlagen")
+                tmp.unlink(missing_ok=True)
+                self.send_error(400, "kein gültiges Backup-Archiv")
+                return
+            tmp.unlink(missing_ok=True)
+            self.send_response(303)
+            self.send_header("Location", "/?restore=ok")
             self.end_headers()
             return
         if self.path == "/backup/config":
@@ -990,6 +1091,29 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
                 log.exception("Restore fehlgeschlagen")
                 self.send_error(500, "Restore fehlgeschlagen — siehe Server-Log")
                 return
+            self.send_response(303)
+            self.send_header("Location", "/")
+            self.end_headers()
+            return
+        if self.path == "/ingest/control":
+            length = int(self.headers.get("Content-Length", 0))
+            params = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8"))
+            project_id = (params.get("project_id") or [""])[0]
+            action = (params.get("action") or [""])[0]
+            try:
+                _validate_project(project_id)
+            except ValueError:
+                self.send_error(400, "invalid project_id")
+                return
+            if action not in ("pause", "resume", "stop"):
+                self.send_error(400, "invalid action")
+                return
+            # Nur setzen, wenn wirklich ein Ingest läuft/pausiert (sonst ignorieren).
+            if _ingest_status.get(project_id, {}).get("state") in ("running", "paused"):
+                if action == "resume":
+                    _ingest_control.pop(project_id, None)
+                else:
+                    _ingest_control[project_id] = action
             self.send_response(303)
             self.send_header("Location", "/")
             self.end_headers()

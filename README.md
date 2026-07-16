@@ -119,12 +119,18 @@ http://myubuntu:5776/<project_id>/graph.html
 Der Viewer-Root (`http://myubuntu:5776/`) zeigt eine Landing-Page: alle
 indexierten Projekte als Karten mit ihrem Anzeigenamen (falls gesetzt). Klick öffnet
 den Graphen. Läuft gerade ein `ingest_paperless`, trägt die betroffene Karte ein
-**Import-Status-Badge** (⏳ läuft `done/total` / ✓ zuletzt indexiert / ✗ Fehler).
+**Import-Status-Badge** (⏳ läuft `done/total` / ⏸ pausiert / ⏹ abgebrochen /
+✓ zuletzt indexiert / ✗ Fehler).
 Dokumente werden einzeln extrahiert (Zähler pro fertigem Dokument); zusätzlich zeigt das
 Badge LightRAGs aktuelle Live-Meldung (z.B. „Chunk 5 of 26 extracted …"), sodass man
-den Fortschritt auch innerhalb eines langen Dokuments sieht. Bei laufendem Import lädt
-die Seite sich alle 5 s selbst neu, ohne dass man ein MCP-Tool aufrufen muss. Jede Karte hat drei Buttons:
+den Fortschritt auch innerhalb eines langen Dokuments sieht. Bei laufendem oder
+pausiertem Import lädt die Seite sich alle 5 s selbst neu, ohne dass man ein MCP-Tool
+aufrufen muss. Jede Karte hat folgende Buttons:
 
+- **Pause / Fortsetzen / Stop** (nur bei laufendem/pausiertem Ingest): steuert den
+  Import kooperativ **zwischen zwei Dokumenten** (POST `/ingest/control`) — serverseitig
+  derselbe Weg wie das MCP-Tool `ingest_control`. Pause gibt die GPU frei (mistral
+  zurück für paperless-ai), Fortsetzen lädt qwen neu. Bereits Indexiertes bleibt.
 - **Erstellen/Aktualisieren:** Rendert den Graphen aus `.graphml` (POST `/refresh`).
 - **Umbenennen:** Öffnet ein Eingabefeld für den neuen Anzeigenamen (POST `/rename`).
 - **Löschen:** Entfernt den Projekt-Index nach Browser-Bestätigung (Quelldokumente
@@ -150,10 +156,15 @@ Bedienung komplett über die Viewer-Landing-Page (`http://myubuntu:5776/`):
 
 - **Zeitplan:** `aus` / `stündlich` / `täglich` / `wöchentlich`, „Speichern" übernimmt.
   Die Einstellung liegt in `<Backup-Ordner>/.config.json` und überlebt Neustarts.
-- **Jetzt sichern:** Schreibt sofort ein Archiv.
-- **Wiederherstellen:** Button an jedem gelisteten Archiv spielt dieses zurück — ersetzt
-  `./data/projects/` komplett durch den Archivstand (Bestätigung im Browser). Der jetzige
-  Stand geht dabei verloren. Nicht während eines Ingests möglich (Konflikt-Meldung).
+- **Jetzt sichern:** Schreibt sofort ein Archiv — **nur wenn sich seit dem letzten
+  Backup etwas geändert hat** (sonst kurze Rückmeldung „nichts geändert").
+- **Wiederherstellen:** Button an jedem der **letzten 5** gelisteten Archive (mit Zeitpunkt
+  und Größe) spielt dieses zurück — ersetzt `./data/projects/` komplett durch den
+  Archivstand (Bestätigung im Browser). Der jetzige Stand geht dabei verloren. Nicht
+  während eines Ingests möglich (Konflikt-Meldung).
+- **Aus Datei wiederherstellen…:** Datei-Öffnen-Dialog für ein beliebiges Archiv vom
+  Rechner (z. B. aus dem synchronisierten OneDrive-Ordner, auch älter als die letzten 5).
+  Die Datei wird hochgeladen, auf gültiges Format geprüft und zurückgespielt.
 
 Verhalten:
 
@@ -209,6 +220,7 @@ docker compose -f /var/local/mydocker/doc-graph/docker-compose.yml up -d
 | `list_projects()` | Projekte + Dokumentzahl (zeigt project_id, optional Anzeigename in Klammern) |
 | `ingest_paperless(project_id, tag/document_type/correspondent/query_text)` | Delta-Indexierung aus Paperless (Hash-Manifest, nur Neues/Geändertes) — Extraktion läuft im Hintergrund, das Tool kehrt sofort zurück |
 | `ingest_status(project_id)` | Fortschritt/Ergebnis des laufenden bzw. letzten Ingest-Laufs. Feld `docs` zeigt die **echten** LightRAG-Zustände (`processed`/`processing`/`pending`/`failed`) — nur `processed` heißt wirklich im Graph; `state:done` heißt nur „Dispatch fertig" |
+| `ingest_control(project_id, action)` | Steuert einen laufenden Ingest: `pause` (hält nach dem aktuellen Dokument an, gibt die GPU frei → mistral zurück für paperless-ai), `resume` (lädt qwen neu, macht weiter), `stop` (bricht ab, bereits Indexiertes bleibt) |
 | `ingest_directory(project_id, subpath)` | .txt/.md/.pdf aus gemountetem Verzeichnis (PDF via pdftotext, kein OCR — gescannte Bilder über Paperless) |
 | `query(project_id, question, mode, only_context, max_total_tokens)` | Abfrage: local / global / hybrid / mix / naive. `only_context` ist **default True** (Claude formuliert aus dem Kontext); die lokale LLM-Formulierung ist auf geteilter GPU zu langsam. `max_total_tokens` (default 12000) deckelt den Kontext, damit er das MCP-Token-Limit nicht sprengt |
 | `get_entity(project_id, entity_name)` | Alle Fakten/Relationen zu einer Entität |

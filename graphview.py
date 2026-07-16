@@ -5,6 +5,7 @@ Filtern, Physik-Toggle, Typ-Chip im Info-Panel."""
 
 import hashlib
 import json
+import re
 
 # vis-network per CDN (der Browser braucht Internet). Bewusst kein Inline-Bundle:
 # ponytail: CDN reicht im LAN; ~1 MB inline lohnt nur bei echtem Offline-Zwang.
@@ -40,6 +41,12 @@ def _status_badge(st: dict) -> str:
         detail = f' · {_esc(msg)}' if msg else ""
         return (f'<span class="badge run">⏳ Ingest läuft — {st.get("done", 0)}/{total} '
                 f'Dokumente fertig{detail}</span>')
+    if state == "paused":
+        return (f'<span class="badge run">⏸ Ingest pausiert — {st.get("done", 0)}/{total} '
+                f'Dokumente fertig (GPU freigegeben)</span>')
+    if state == "stopped":
+        return (f'<span class="badge done">⏹ Ingest abgebrochen bei {st.get("done", 0)}/{total} '
+                f'Dokumenten ({_esc(st.get("at", ""))})</span>')
     if state == "done":
         return (f'<span class="badge done">✓ zuletzt indexiert: {st.get("new", 0)} neu, '
                 f'{st.get("updated", 0)} aktualisiert ({_esc(st.get("at", ""))})</span>')
@@ -48,8 +55,22 @@ def _status_badge(st: dict) -> str:
     return ""
 
 
-def _backup_section(cfg: dict, backups: list[dict]) -> str:
-    """Backup-Karte: Schedule-Dropdown, Jetzt-sichern-Button, letzte Archive."""
+def _backup_time(name: str) -> str:
+    """'backup_2026-07-16_14-30-05.tar.gz' -> '2026-07-16 14:30' (Fallback: Name)."""
+    m = re.search(r"(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})", name)
+    return f"{m.group(1)} {m.group(2)}:{m.group(3)}" if m else name
+
+
+_NOTICES = {
+    "backup:ok": ("done", "✓ Backup geschrieben."),
+    "backup:nochange": ("run", "Nichts geändert seit dem letzten Backup — kein neues Archiv."),
+    "restore:ok": ("done", "✓ Backup wiederhergestellt."),
+    "restore:err": ("err", "✗ Restore fehlgeschlagen — keine gültige Backup-Datei."),
+}
+
+
+def _backup_section(cfg: dict, backups: list[dict], notice: str | None = None) -> str:
+    """Backup-Karte: Schedule-Dropdown, Jetzt-sichern, letzte 5 Archive, Restore per Datei."""
     interval = cfg.get("interval", "daily") if cfg.get("enabled") else "off"
     labels = {"off": "aus", "hourly": "stündlich", "daily": "täglich", "weekly": "wöchentlich"}
     opts = "".join(f'<option value="{k}"{" selected" if k == interval else ""}>{v}</option>'
@@ -57,10 +78,14 @@ def _backup_section(cfg: dict, backups: list[dict]) -> str:
     last = cfg.get("last_backup")
     last_txt = (f"Letztes Backup: {_esc(last.replace('T', ' ')[:16])}" if last
                 else "Noch kein Backup gelaufen")
+    cls, msg = _NOTICES.get(notice or "", ("", ""))
+    banner = f'<div class="badge {cls}" style="margin-bottom:10px">{_esc(msg)}</div>' if msg else ""
     if backups:
         rows = "\n".join(
-            f'<li><code>{_esc(b["name"])}</code> · {b["size"] / 1024 / 1024:.1f} MB'
-            f'<form method="post" action="/backup/restore" style="display:inline;margin-left:8px" '
+            f'<li class="bkrow">'
+            f'<span class="bktime">{_esc(_backup_time(b["name"]))}</span>'
+            f'<span class="bksize">{b["size"] / 1024 / 1024:.1f} MB</span>'
+            f'<form method="post" action="/backup/restore" style="margin:0" '
             f'onsubmit="return confirm(\'Aktuelle Projekte durch dieses Backup ERSETZEN? '
             f'Der jetzige Stand geht verloren.\')">'
             f'<input type="hidden" name="name" value="{_esc(b["name"])}">'
@@ -72,23 +97,38 @@ def _backup_section(cfg: dict, backups: list[dict]) -> str:
         files = '<p class="hint">Noch keine Archive im Backup-Ordner.</p>'
     return f"""<h2>Backup</h2>
 <div class="steps">
-  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+  {banner}
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
     <form method="post" action="/backup/config" style="display:flex;align-items:center;gap:6px;margin:0">
       <label for="iv">Zeitplan:</label>
       <select id="iv" name="interval" style="font:inherit;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text)">{opts}</select>
       <button class="del" type="submit" title="Zeitplan speichern">Speichern</button>
     </form>
     <form method="post" action="/backup/now" style="margin:0">
-      <button class="del" type="submit" title="Sofort ein Backup schreiben">Jetzt sichern</button>
+      <button class="del" type="submit" title="Nur sichern, wenn sich etwas geändert hat">Jetzt sichern</button>
     </form>
+    <label class="del" style="cursor:pointer" title="Backup-Datei vom Rechner wiederherstellen (z. B. aus dem synchronisierten OneDrive-Ordner)">
+      Aus Datei wiederherstellen…
+      <input type="file" accept=".gz,.tgz,.tar.gz" style="display:none" onchange="restoreFromFile(this)">
+    </label>
     <span class="hint">{last_txt}</span>
   </div>
   {files}
-</div>"""
+</div>
+<script>
+function restoreFromFile(inp){{
+  var f = inp.files[0]; if(!f) return;
+  if(!confirm('Aktuelle Projekte durch "'+f.name+'" ERSETZEN? Der jetzige Stand geht verloren.')){{inp.value='';return;}}
+  fetch('/backup/restore-upload', {{method:'POST', body:f}})
+    .then(function(r){{ location.href = r.ok ? '/?restore=ok' : '/?restore=err'; }})
+    .catch(function(){{ location.href = '/?restore=err'; }});
+}}
+</script>"""
 
 
 def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: dict | None = None,
-               backup_cfg: dict | None = None, backups: list[dict] | None = None) -> str:
+               backup_cfg: dict | None = None, backups: list[dict] | None = None,
+               notice: str | None = None) -> str:
     """Landing-Page für den Viewer-Root. items = (projekt_id, hat_graph_html).
     status = {projekt_id: ingest_status_dict} — zeigt Import-Fortschritt pro Karte.
     meta = {projekt_id: {"project_name": "..."}} — Anzeigenamen.
@@ -96,13 +136,21 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
     Erklärt, was zu sehen ist und wie es weitergeht (statt rohem Dir-Listing)."""
     status = status or {}
     meta = meta or {}
-    running = any(s.get("state") == "running" for s in status.values())
+    # Auto-Refresh auch bei 'paused', damit Fortsetzen/Fortschritt sichtbar wird.
+    running = any(s.get("state") in ("running", "paused") for s in status.values())
+
+    def _ctl_form(e: str, action: str, label: str) -> str:
+        return (f'<form method="post" action="/ingest/control" class="del" style="margin-right:6px">'
+                f'<input type="hidden" name="project_id" value="{e}">'
+                f'<input type="hidden" name="action" value="{action}">'
+                f'<button title="Ingest {label.lower()}">{label}</button></form>')
 
     def _row(p: str, has: bool) -> str:
         e = _esc(p)
         m = meta.get(p, {})
         display_name = m.get("project_name") or p
-        badge = _status_badge(status.get(p, {}))
+        st = status.get(p, {})
+        badge = _status_badge(st)
         left = (f'<a class="nm open" href="./{e}/graph.html">{_esc(display_name)}'
                 '<span class="go"> · Graph öffnen →</span></a>' if has else
                 f'<span class="nm">{_esc(display_name)}</span>'
@@ -122,7 +170,15 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
                       "Der Index wird entfernt, die Quelldokumente bleiben.')\">"
                       f'<input type="hidden" name="project_id" value="{e}">'
                       '<button title="Projekt-Index löschen">Löschen</button></form>')
-        forms = refresh_form + rename_form + delete_form
+        # Pause/Fortsetzen + Stop nur, solange ein Ingest läuft oder pausiert ist.
+        state = st.get("state")
+        if state == "running":
+            control_forms = _ctl_form(e, "pause", "Pause") + _ctl_form(e, "stop", "Stop")
+        elif state == "paused":
+            control_forms = _ctl_form(e, "resume", "Fortsetzen") + _ctl_form(e, "stop", "Stop")
+        else:
+            control_forms = ""
+        forms = control_forms + refresh_form + rename_form + delete_form
         cls = "card" if has else "card todo"
         return f'<div class="{cls}"><div class="left">{left}</div><div style="display:flex;gap:6px">{forms}</div></div>'
 
@@ -168,6 +224,10 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
   .steps{{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px 22px;font-size:13px;line-height:1.7}}
   .steps ol{{margin:8px 0 0 18px}}
   .bk{{list-style:none;margin:0;font-size:12px;color:var(--muted)}}
+  .bkrow{{display:flex;align-items:center;gap:10px;padding:6px 0;border-top:1px solid var(--border)}}
+  .bkrow:first-child{{border-top:none}}
+  .bktime{{font-weight:600;color:var(--text);min-width:120px}}
+  .bksize{{flex:1;color:var(--muted)}}
 </style></head><body>
 <h1>doc-graph</h1>
 <p class="sub">Knowledge Graphs aus deinen Dokumenten — pro Projekt ein Graph. Klick ein Projekt an, um den interaktiven Graphen zu öffnen.</p>
@@ -175,7 +235,7 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
 <div class="grid">
 {rows}
 </div>
-{_backup_section(backup_cfg or {}, backups or [])}
+{_backup_section(backup_cfg or {}, backups or [], notice)}
 <h2>Wie es weitergeht</h2>
 <div class="steps">
   Neue Dokumente in den Graphen bringen — im Claude-Code-Prompt:
