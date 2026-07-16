@@ -849,10 +849,10 @@ def _save_backup_cfg(cfg: dict) -> None:
     tmp.replace(_BACKUP_CONFIG)
 
 
-def _projects_signature() -> dict:
-    """Fingerabdruck der Projektdaten — ändert er sich nicht, ist ein neues
-    Backup sinnlos (ai-rem vergleicht analog die Graph-Zählung)."""
-    files = [p for p in PROJECTS_DIR.rglob("*") if p.is_file()]
+def _project_signature(project: str) -> dict:
+    """Fingerabdruck EINES Projekts — ändert er sich nicht, ist ein neues Backup
+    dieses Projekts sinnlos."""
+    files = [p for p in (PROJECTS_DIR / project).rglob("*") if p.is_file()]
     return {
         "files": len(files),
         "bytes": sum(p.stat().st_size for p in files),
@@ -860,65 +860,94 @@ def _projects_signature() -> dict:
     }
 
 
-def _list_backup_files() -> list[Path]:
-    return sorted(BACKUP_DIR.glob("backup_*.tar.gz"), reverse=True)
+def _existing_projects() -> list[str]:
+    """Alle Projekt-Verzeichnisse (Storage-Keys) unter PROJECTS_DIR."""
+    if not PROJECTS_DIR.exists():
+        return []
+    return sorted(p.name for p in PROJECTS_DIR.iterdir() if p.is_dir())
 
 
-def _do_backup() -> str:
-    """Schreibt ein tar.gz aller Projekte, rotiert alte weg, gibt den Namen zurück."""
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+def _project_backup_dir(project: str) -> Path:
+    return BACKUP_DIR / project
+
+
+def _list_project_backups(project: str) -> list[Path]:
+    """Archive EINES Projekts, neueste zuerst."""
+    return sorted(_project_backup_dir(project).glob("backup_*.tar.gz"), reverse=True)
+
+
+def _do_backup_project(project: str) -> str:
+    """Sichert EIN Projekt als tar.gz (Archiv-Wurzel = project_id, damit die Datei
+    für sich allein wiederherstellbar ist), rotiert alte Stände weg."""
+    project = _validate_project(project)
+    bdir = _project_backup_dir(project)
+    bdir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     name = f"backup_{ts}.tar.gz"
-    path = BACKUP_DIR / name
+    path = bdir / name
 
     tmp = path.with_suffix(".tar.gz.tmp")
     with tarfile.open(tmp, "w:gz") as tar:
-        tar.add(PROJECTS_DIR, arcname="projects")
+        tar.add(PROJECTS_DIR / project, arcname=project)
     tmp.replace(path)
 
     cfg = _load_backup_cfg()
-    cfg["last_backup"] = _now()
-    cfg["last_backup_file"] = name
-    cfg["last_backup_signature"] = _projects_signature()
+    cfg.setdefault("projects", {})[project] = {
+        "last_backup": _now(), "signature": _project_signature(project),
+    }
     _save_backup_cfg(cfg)
 
-    for old in _list_backup_files()[MAX_BACKUPS:]:
+    for old in _list_project_backups(project)[MAX_BACKUPS:]:
         old.unlink(missing_ok=True)
 
-    log.info("Backup geschrieben: %s (%.1f MB)", name, path.stat().st_size / 1024 / 1024)
+    log.info("Backup Projekt '%s': %s (%.1f MB)", project, name, path.stat().st_size / 1024 / 1024)
     return name
 
 
-def _do_restore(name: str) -> None:
-    """Restore aus einem Archiv im BACKUP_DIR (per Name aus der Liste)."""
-    _do_restore_path(BACKUP_DIR / name)
+def _do_restore_project(project: str, name: str) -> None:
+    """Restore eines gelisteten Projekt-Archivs (Name aus dem Projekt-Ordner)."""
+    project = _validate_project(project)
+    _restore_from_archive(_project_backup_dir(project) / name)
 
 
-def _do_restore_path(path: Path) -> None:
-    """Spielt ein Backup-Archiv zurück: ersetzt PROJECTS_DIR durch den Archivstand.
-    Datenverlust-sicher — erst nach temp extrahieren, dann der alte Stand nur
-    weggemovt (nicht gelöscht), bis der neue drin ist."""
+def _restore_from_archive(path: Path) -> str:
+    """Spielt ein Projekt-Archiv zurück und legt das Projekt bei Bedarf NEU an.
+    Archiv-Wurzel = project_id (Legacy: 'projects/' mit allen Projekten darin).
+    Datenverlust-sicher — erst temp-extrahieren, dann der alte Stand je Projekt
+    weggemovt (nicht gelöscht), bis der neue drin ist. Gibt die Projekt-IDs zurück."""
     tmp = PROJECTS_DIR.parent / ".restore_tmp"
-    old = PROJECTS_DIR.parent / ".projects_old"
     shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True)
-    with tarfile.open(path, "r:gz") as tar:
-        tar.extractall(tmp, filter="data")  # Python 3.12 -> traversal-sicher
-    new = tmp / "projects"
-    if not new.is_dir():
+    try:
+        with tarfile.open(path, "r:gz") as tar:
+            tar.extractall(tmp, filter="data")  # Python 3.12 -> traversal-sicher
+        tops = [p for p in tmp.iterdir() if p.is_dir()]
+        # Legacy-Gesamtarchiv: Wurzel 'projects/' -> die enthaltenen Projekte.
+        if len(tops) == 1 and tops[0].name == "projects":
+            tops = [p for p in tops[0].iterdir() if p.is_dir()]
+        if not tops:
+            raise ValueError("Archiv enthält kein Projekt-Verzeichnis")
+        restored = []
+        for src in tops:
+            project = _validate_project(src.name)  # Path-Traversal-Schutz
+            dst = PROJECTS_DIR / project
+            old = PROJECTS_DIR.parent / f".{project}_old"
+            PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+            shutil.rmtree(old, ignore_errors=True)
+            if dst.exists():
+                dst.rename(old)  # alten Stand erst wegmoven, nicht löschen
+            src.rename(dst)
+            shutil.rmtree(old, ignore_errors=True)
+            _instances.pop(project, None)  # gecachte Instanz zeigt auf alten Stand
+            restored.append(project)
+        log.info("Restore aus %s: %s", path.name, ", ".join(restored))
+        return ", ".join(restored)
+    finally:
         shutil.rmtree(tmp, ignore_errors=True)
-        raise ValueError("Backup enthält kein projects/-Verzeichnis")
-    shutil.rmtree(old, ignore_errors=True)
-    PROJECTS_DIR.rename(old)  # alten Stand erst wegmoven, nicht löschen
-    new.rename(PROJECTS_DIR)
-    shutil.rmtree(old, ignore_errors=True)
-    shutil.rmtree(tmp, ignore_errors=True)
-    _instances.clear()  # gecachte LightRAG-Instanzen zeigen auf den alten Stand
-    log.info("Backup wiederhergestellt: %s", path.name)
 
 
 def _backup_scheduler() -> None:
-    """Prüft minütlich, ob ein geplantes Backup fällig ist."""
+    """Prüft minütlich, ob je Projekt ein geplantes Backup fällig ist."""
     while True:
         time.sleep(60)
         try:
@@ -929,14 +958,18 @@ def _backup_scheduler() -> None:
             # gäbe das tar einen halben Stand. Nächster Tick versucht es erneut.
             if _active_ingests > 0:
                 continue
-            last = cfg.get("last_backup")
-            if last:
-                delta = (datetime.now() - datetime.fromisoformat(last)).total_seconds()
-                if delta < BACKUP_INTERVALS.get(cfg.get("interval", "daily"), 86400):
-                    continue
-            if cfg.get("last_backup_signature") == _projects_signature():
-                continue  # nichts geändert seit dem letzten Backup
-            _do_backup()
+            interval = BACKUP_INTERVALS.get(cfg.get("interval", "daily"), 86400)
+            projs = cfg.get("projects", {})
+            for project in _existing_projects():
+                pm = projs.get(project, {})
+                last = pm.get("last_backup")
+                if last:
+                    delta = (datetime.now() - datetime.fromisoformat(last)).total_seconds()
+                    if delta < interval:
+                        continue
+                if pm.get("signature") == _project_signature(project):
+                    continue  # nichts geändert seit dem letzten Backup
+                _do_backup_project(project)
         except Exception:  # noqa: BLE001 — Scheduler darf nie sterben
             log.exception("Geplantes Backup fehlgeschlagen")
 
@@ -968,12 +1001,15 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             for proj_id in rendered.keys():
                 if (PROJECTS_DIR / proj_id / "meta.json").exists():
                     meta[proj_id] = _load_meta(proj_id)
-            backups = [{"name": f.name, "size": f.stat().st_size, "mtime": f.stat().st_mtime}
-                       for f in _list_backup_files()]
+            # Backup-Archive je Projekt (neueste zuerst) für die Restore-Auswahl.
+            project_backups = {
+                p: [{"name": f.name, "size": f.stat().st_size} for f in _list_project_backups(p)]
+                for p in rendered
+            }
             # Anzahl indexierter Dokumente je Projekt aus dem Ingest-Manifest.
             counts = {p: len(_load_manifest(p)) for p in rendered}
-            body = index_html(items, _ingest_status, meta,
-                              _load_backup_cfg(), backups, notice, counts).encode("utf-8")
+            body = index_html(items, _ingest_status, meta, _load_backup_cfg(),
+                              project_backups, notice, counts).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -1020,14 +1056,23 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             if _active_ingests > 0:
                 self.send_error(409, "Ingest laeuft — Backup waere unvollstaendig")
                 return
-            # Nur sichern, wenn sich seit dem letzten Backup etwas geändert hat.
-            if _load_backup_cfg().get("last_backup_signature") == _projects_signature():
+            length = int(self.headers.get("Content-Length", 0))
+            params = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8"))
+            project_id = (params.get("project_id") or [""])[0]
+            try:
+                _validate_project(project_id)
+            except ValueError:
+                self.send_error(400, "invalid project_id")
+                return
+            # Nur sichern, wenn sich das Projekt seit dem letzten Backup geändert hat.
+            pm = _load_backup_cfg().get("projects", {}).get(project_id, {})
+            if pm.get("signature") == _project_signature(project_id):
                 self.send_response(303)
                 self.send_header("Location", "/?backup=nochange")
                 self.end_headers()
                 return
             try:
-                _do_backup()
+                _do_backup_project(project_id)
             except Exception:  # noqa: BLE001 — Fehler gehört in die UI, nicht in einen 500er-Trace
                 log.exception("Manuelles Backup fehlgeschlagen")
                 self.send_error(500, "Backup fehlgeschlagen — siehe Server-Log")
@@ -1050,7 +1095,7 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             tmp = BACKUP_DIR / ".upload_restore.tar.gz"
             try:
                 tmp.write_bytes(self.rfile.read(length))
-                _do_restore_path(tmp)  # validiert Format + projects/-Verzeichnis
+                _restore_from_archive(tmp)  # liest project_id aus dem Archiv, legt bei Bedarf neu an
             except Exception:  # noqa: BLE001 — meist ungültige Datei; in die UI, nicht 500
                 log.exception("Restore aus Upload fehlgeschlagen")
                 tmp.unlink(missing_ok=True)
@@ -1083,18 +1128,24 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
                 return
             length = int(self.headers.get("Content-Length", 0))
             params = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8"))
+            project_id = (params.get("project_id") or [""])[0]
             name = (params.get("name") or [""])[0]
-            if name not in {f.name for f in _list_backup_files()}:  # kein Path-Traversal
+            try:
+                _validate_project(project_id)
+            except ValueError:
+                self.send_error(400, "invalid project_id")
+                return
+            if name not in {f.name for f in _list_project_backups(project_id)}:  # kein Path-Traversal
                 self.send_error(400, "unbekanntes Backup")
                 return
             try:
-                _do_restore(name)
+                _do_restore_project(project_id, name)
             except Exception:  # noqa: BLE001 — Fehler gehört in die UI, nicht in einen Trace
                 log.exception("Restore fehlgeschlagen")
                 self.send_error(500, "Restore fehlgeschlagen — siehe Server-Log")
                 return
             self.send_response(303)
-            self.send_header("Location", "/")
+            self.send_header("Location", "/?restore=ok")
             self.end_headers()
             return
         if self.path == "/ingest/control":

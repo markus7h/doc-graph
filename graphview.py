@@ -69,56 +69,58 @@ _NOTICES = {
 }
 
 
-def _backup_section(cfg: dict, backups: list[dict], notice: str | None = None) -> str:
-    """Backup-Karte: Schedule-Dropdown, Jetzt-sichern, letzte 5 Archive, Restore per Datei."""
+def _card_backup(e: str, backups: list[dict]) -> str:
+    """Backup-Steuerung EINES Projekts für die Karte: 'Sichern' + (falls Archive
+    vorhanden) Auswahl der letzten 5 Stände + 'Wiederherstellen'."""
+    save = (f'<form method="post" action="/backup/now" class="del" style="margin:0">'
+            f'<input type="hidden" name="project_id" value="{e}">'
+            f'<button type="submit" title="Dieses Projekt sichern (nur bei Änderung)">Sichern</button></form>')
+    if not backups:
+        return save
+    opts = "".join(f'<option value="{_esc(b["name"])}">{_esc(_backup_time(b["name"]))} '
+                   f'· {b["size"] / 1024 / 1024:.1f} MB</option>' for b in backups[:5])
+    restore = (f'<form method="post" action="/backup/restore" class="del" style="margin:0;display:flex;gap:4px" '
+               f'onsubmit="return confirm(\'Projekt &quot;{e}&quot; durch diesen Stand ERSETZEN? '
+               f'Der jetzige Stand geht verloren.\')">'
+               f'<input type="hidden" name="project_id" value="{e}">'
+               f'<select name="name" style="font:inherit;font-size:12px;border:none;background:none;color:var(--muted);max-width:170px">{opts}</select>'
+               f'<button type="submit" title="Gewählten Stand zurückspielen">Wiederherstellen</button></form>')
+    return save + restore
+
+
+def _backup_section(cfg: dict, notice: str | None = None) -> str:
+    """Globale Backup-Karte: Zeitplan + Restore aus Datei. Die Archive selbst
+    werden je Projekt auf der Projekt-Karte verwaltet."""
     interval = cfg.get("interval", "daily") if cfg.get("enabled") else "off"
     labels = {"off": "aus", "hourly": "stündlich", "daily": "täglich", "weekly": "wöchentlich"}
     opts = "".join(f'<option value="{k}"{" selected" if k == interval else ""}>{v}</option>'
                    for k, v in labels.items())
-    last = cfg.get("last_backup")
-    last_txt = (f"Letztes Backup: {_esc(last.replace('T', ' ')[:16])}" if last
-                else "Noch kein Backup gelaufen")
+    lasts = [pm.get("last_backup") for pm in cfg.get("projects", {}).values() if pm.get("last_backup")]
+    last = max(lasts) if lasts else None
+    last_txt = f"Letztes Backup: {_esc(last[:16])}" if last else "Noch kein Backup gelaufen"
     cls, msg = _NOTICES.get(notice or "", ("", ""))
     banner = f'<div class="badge {cls}" style="margin-bottom:10px">{_esc(msg)}</div>' if msg else ""
-    if backups:
-        rows = "\n".join(
-            f'<li class="bkrow">'
-            f'<span class="bktime">{_esc(_backup_time(b["name"]))}</span>'
-            f'<span class="bksize">{b["size"] / 1024 / 1024:.1f} MB</span>'
-            f'<form method="post" action="/backup/restore" style="margin:0" '
-            f'onsubmit="return confirm(\'Aktuelle Projekte durch dieses Backup ERSETZEN? '
-            f'Der jetzige Stand geht verloren.\')">'
-            f'<input type="hidden" name="name" value="{_esc(b["name"])}">'
-            f'<button class="del" type="submit" title="Dieses Backup zurückspielen">Wiederherstellen</button>'
-            f'</form></li>'
-            for b in backups[:5])
-        files = f'<ul class="bk">{rows}</ul>'
-    else:
-        files = '<p class="hint">Noch keine Archive im Backup-Ordner.</p>'
     return f"""<h2>Backup</h2>
 <div class="steps">
   {banner}
-  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
     <form method="post" action="/backup/config" style="display:flex;align-items:center;gap:6px;margin:0">
       <label for="iv">Zeitplan:</label>
       <select id="iv" name="interval" style="font:inherit;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text)">{opts}</select>
       <button class="del" type="submit" title="Zeitplan speichern">Speichern</button>
     </form>
-    <form method="post" action="/backup/now" style="margin:0">
-      <button class="del" type="submit" title="Nur sichern, wenn sich etwas geändert hat">Jetzt sichern</button>
-    </form>
-    <label class="del" style="cursor:pointer" title="Backup-Datei vom Rechner wiederherstellen (z. B. aus dem synchronisierten OneDrive-Ordner)">
-      Aus Datei wiederherstellen…
+    <label class="del" style="cursor:pointer" title="Projekt-Backup vom Rechner wiederherstellen (z. B. aus dem synchronisierten OneDrive-Ordner) — legt das Projekt bei Bedarf neu an">
+      Projekt aus Datei wiederherstellen…
       <input type="file" accept=".gz,.tgz,.tar.gz" style="display:none" onchange="restoreFromFile(this)">
     </label>
     <span class="hint">{last_txt}</span>
   </div>
-  {files}
+  <p class="hint" style="margin-top:8px">Zeitplan sichert jedes geänderte Projekt einzeln. Sichern/Wiederherstellen einzelner Stände direkt auf der Projekt-Karte.</p>
 </div>
 <script>
 function restoreFromFile(inp){{
   var f = inp.files[0]; if(!f) return;
-  if(!confirm('Aktuelle Projekte durch "'+f.name+'" ERSETZEN? Der jetzige Stand geht verloren.')){{inp.value='';return;}}
+  if(!confirm('Projekt aus "'+f.name+'" wiederherstellen? Ein bestehendes Projekt gleichen Namens wird ERSETZT.')){{inp.value='';return;}}
   fetch('/backup/restore-upload', {{method:'POST', body:f}})
     .then(function(r){{ location.href = r.ok ? '/?restore=ok' : '/?restore=err'; }})
     .catch(function(){{ location.href = '/?restore=err'; }});
@@ -127,17 +129,18 @@ function restoreFromFile(inp){{
 
 
 def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: dict | None = None,
-               backup_cfg: dict | None = None, backups: list[dict] | None = None,
+               backup_cfg: dict | None = None, project_backups: dict | None = None,
                notice: str | None = None, counts: dict | None = None) -> str:
     """Landing-Page für den Viewer-Root. items = (projekt_id, hat_graph_html).
     status = {projekt_id: ingest_status_dict} — zeigt Import-Fortschritt pro Karte.
     meta = {projekt_id: {"project_name": "..."}} — Anzeigenamen.
     counts = {projekt_id: anzahl_indexierter_dokumente} — pro Karte angezeigt.
-    backup_cfg/backups — Backup-Zeitplan und vorhandene Archive.
+    backup_cfg — Backup-Zeitplan. project_backups = {projekt_id: [{name,size}]} je Projekt.
     Erklärt, was zu sehen ist und wie es weitergeht (statt rohem Dir-Listing)."""
     status = status or {}
     meta = meta or {}
     counts = counts or {}
+    project_backups = project_backups or {}
     # Auto-Refresh auch bei 'paused', damit Fortsetzen/Fortschritt sichtbar wird.
     running = any(s.get("state") in ("running", "paused") for s in status.values())
 
@@ -182,9 +185,11 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
             control_forms = _ctl_form(e, "resume", "Fortsetzen") + _ctl_form(e, "stop", "Stop")
         else:
             control_forms = ""
-        forms = control_forms + refresh_form + rename_form + delete_form
+        backup_forms = _card_backup(e, project_backups.get(p, []))
+        forms = control_forms + refresh_form + rename_form + backup_forms + delete_form
         cls = "card" if has else "card todo"
-        return f'<div class="{cls}"><div class="left">{left}</div><div style="display:flex;gap:6px">{forms}</div></div>'
+        return (f'<div class="{cls}"><div class="left">{left}</div>'
+                f'<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">{forms}</div></div>')
 
     if items:
         rows = "\n".join(_row(p, has) for p, has in items)
@@ -239,7 +244,7 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
 <div class="grid">
 {rows}
 </div>
-{_backup_section(backup_cfg or {}, backups or [], notice)}
+{_backup_section(backup_cfg or {}, notice)}
 <h2>Wie es weitergeht</h2>
 <div class="steps">
   Neue Dokumente in den Graphen bringen — im Claude-Code-Prompt:

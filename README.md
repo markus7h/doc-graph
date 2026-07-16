@@ -144,47 +144,55 @@ Der Viewer ist ein stdlib-Fileserver (LAN-intern, kein Auth/HTTPS).
 
 ## Backup
 
-Der Server sichert alle Projektdaten (`/data/projects`) als `tar.gz` in einen
-gemounteten Ordner — analog ai-rem, dessen Backups im selben OneDrive-Verzeichnis
-daneben liegen:
+Backups laufen **je Projekt** als eigenes `tar.gz` in einen gemounteten Ordner —
+je Projekt ein Unterordner, analog ai-rem im selben OneDrive-Verzeichnis daneben:
 
 ```yaml
 # docker-compose.yml
 - ${DOC_GRAPH_BACKUP_PATH:-/home/markus/mystorage/OneDrive/doc-graph}:/backups
 ```
 
+Ablage: `<Backup-Ordner>/<project_id>/backup_<YYYY-MM-DD_HH-MM-SS>.tar.gz`.
+Die Archiv-Wurzel ist die `project_id`, damit eine einzelne Datei für sich allein
+wiederherstellbar ist (auch in ein noch nicht existierendes Projekt).
+
 Bedienung komplett über die Viewer-Landing-Page (`http://myubuntu:5776/`):
 
+Global (Backup-Karte):
 - **Zeitplan:** `aus` / `stündlich` / `täglich` / `wöchentlich`, „Speichern" übernimmt.
-  Die Einstellung liegt in `<Backup-Ordner>/.config.json` und überlebt Neustarts.
-- **Jetzt sichern:** Schreibt sofort ein Archiv — **nur wenn sich seit dem letzten
-  Backup etwas geändert hat** (sonst kurze Rückmeldung „nichts geändert").
-- **Wiederherstellen:** Button an jedem der **letzten 5** gelisteten Archive (mit Zeitpunkt
-  und Größe) spielt dieses zurück — ersetzt `./data/projects/` komplett durch den
-  Archivstand (Bestätigung im Browser). Der jetzige Stand geht dabei verloren. Nicht
-  während eines Ingests möglich (Konflikt-Meldung).
-- **Aus Datei wiederherstellen…:** Datei-Öffnen-Dialog für ein beliebiges Archiv vom
-  Rechner (z. B. aus dem synchronisierten OneDrive-Ordner, auch älter als die letzten 5).
-  Die Datei wird hochgeladen, auf gültiges Format geprüft und zurückgespielt.
+  Der Scheduler sichert **jedes geänderte Projekt einzeln**. Die Einstellung liegt in
+  `<Backup-Ordner>/.config.json` und überlebt Neustarts.
+- **Projekt aus Datei wiederherstellen…:** Datei-Öffnen-Dialog für ein beliebiges
+  Projekt-Archiv vom Rechner (z. B. aus dem synchronisierten OneDrive-Ordner). Die Datei
+  wird hochgeladen, auf gültiges Format geprüft und zurückgespielt — **legt das Projekt
+  neu an, falls es noch nicht existiert**.
+
+Je Projekt-Karte:
+- **Sichern:** Sichert dieses Projekt sofort — **nur wenn es sich seit dem letzten
+  Backup geändert hat** (sonst kurze Rückmeldung „nichts geändert").
+- **Wiederherstellen:** Auswahl der **letzten 5** Stände (Zeitpunkt · Größe) + Button —
+  ersetzt nur dieses Projekt durch den gewählten Stand (Bestätigung im Browser).
 
 Verhalten:
 
-- Dateiname `backup_<YYYY-MM-DD_HH-MM-SS>.tar.gz`, Rotation auf die letzten
-  `MAX_BACKUPS` (Default 10) — ältere werden gelöscht.
+- Rotation je Projekt auf die letzten `MAX_BACKUPS` (Default 10) — ältere gelöscht.
 - **Kein Backup während eines Ingests** (das Archiv wäre ein Zwischenstand); der
-  Scheduler prüft minütlich und holt es danach nach. Der Button meldet in dem Fall
-  einen Konflikt.
-- **Unverändert = kein Backup:** Haben sich die Projektdateien seit dem letzten
-  Archiv nicht geändert (Dateizahl/Größe/mtime), wird der Lauf übersprungen.
+  Scheduler prüft minütlich und holt es danach nach. Manuelle Aktionen melden Konflikt.
+- **Unverändert = kein Backup:** Signatur je Projekt (Dateizahl/Größe/mtime); ohne
+  Änderung wird der Lauf übersprungen.
+- Restore ist datenverlust-sicher: erst temp-extrahiert, dann der alte Projektstand
+  weggemovt, bis der neue drin ist. Alt-Archive mit Wurzel `projects/` (Gesamt-Backups
+  vor v0.1.21) werden beim „aus Datei"-Restore weiterhin erkannt.
 - **Unverschlüsselt** — bewusst: die Quelldokumente liegen im selben OneDrive
   ohnehin im Klartext (bei ai-rem ist das anders, dort ist der Graph das Original).
 
-Restore: Container stoppen, Archiv über das Datenverzeichnis entpacken, Container starten.
+Restore von Hand: Container stoppen, Projekt-Archiv ins Datenverzeichnis entpacken,
+Container starten.
 
 ```bash
 docker compose -f /var/local/mydocker/doc-graph/docker-compose.yml down
-tar -xzf /home/markus/mystorage/OneDrive/doc-graph/backup_<ts>.tar.gz \
-    -C /var/local/mydocker/doc-graph/data --strip-components=1   # projects/ -> data/projects
+tar -xzf /home/markus/mystorage/OneDrive/doc-graph/<project_id>/backup_<ts>.tar.gz \
+    -C /var/local/mydocker/doc-graph/data/projects   # <project_id>/ -> data/projects/<project_id>
 docker compose -f /var/local/mydocker/doc-graph/docker-compose.yml up -d
 ```
 
