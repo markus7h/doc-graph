@@ -293,7 +293,12 @@ async def _purge_stuck_oversized(project_id: str, rag) -> None:
     if not stuck:
         return
     flagged = _load_flagged(project_id)
+    changed = False
     for key, v in stuck.items():
+        # 'approve' des Nutzers respektieren: bewusst freigegebene Docs bleiben in
+        # der Pipeline (nicht löschen), auch wenn sie übergroß sind.
+        if flagged.get(key, {}).get("decision") == "approve":
+            continue
         clen = v.get("content_length") or 0
         try:
             async with _insert_lock:
@@ -306,10 +311,14 @@ async def _purge_stuck_oversized(project_id: str, rag) -> None:
             "chars": clen,
             "est_chunks": clen // max(1, CHUNK_TOKEN_SIZE * 4),
             "reason": f"übergroß, aus hängender LightRAG-Pipeline entfernt (>{MAX_DOC_CHARS})",
+            # decision behalten (z.B. 'ignore'), sonst 'open' = wartet auf Nutzer.
+            "decision": flagged.get(key, {}).get("decision", "open"),
             "at": _now(),
         }
+        changed = True
         log.warning("Poison-Doc %s (%d Zeichen) aus LightRAG entfernt und geflaggt", key, clen)
-    _save_flagged(project_id, flagged)
+    if changed:
+        _save_flagged(project_id, flagged)
 
 
 def _doc_status_counts(project: str) -> dict:
@@ -512,18 +521,29 @@ async def ingest_paperless(
             if manifest.get(doc_key) == h:
                 skipped += 1
                 continue
-            # Sicherheits-Guard: übergroße Dokumente beiseitelegen statt ingestieren.
+            # Sicherheits-Guard: übergroße Dokumente. Entscheidung des Nutzers
+            # (flagged_decide) hat Vorrang: 'approve' -> trotz Größe aufnehmen,
+            # 'ignore' -> still überspringen, 'open'/neu -> flaggen und warten.
             if len(text) > MAX_DOC_CHARS:
-                flagged[doc_key] = {
-                    "title": doc.get("title") or doc_key,
-                    "chars": len(text),
-                    "est_chunks": len(text) // max(1, CHUNK_TOKEN_SIZE * 4),
-                    "reason": f"Text {len(text)} Zeichen > MAX_DOC_CHARS ({MAX_DOC_CHARS})",
-                    "at": _now(),
-                }
-                flagged_new += 1
-                continue
-            flagged.pop(doc_key, None)  # war es mal geflaggt, jetzt klein genug -> frei
+                decision = flagged.get(doc_key, {}).get("decision", "open")
+                if decision == "ignore":
+                    skipped += 1
+                    continue
+                if decision != "approve":
+                    flagged[doc_key] = {
+                        "title": doc.get("title") or doc_key,
+                        "chars": len(text),
+                        "est_chunks": len(text) // max(1, CHUNK_TOKEN_SIZE * 4),
+                        "reason": f"Text {len(text)} Zeichen > MAX_DOC_CHARS ({MAX_DOC_CHARS})",
+                        "decision": "open",
+                        "at": _now(),
+                    }
+                    flagged_new += 1
+                    continue
+                # approve: durchfallen zur Aufnahme, Flag NICHT poppen (bleibt als
+                # 'approved' sichtbar, bis das Doc via Manifest als erledigt gilt)
+            else:
+                flagged.pop(doc_key, None)  # klein genug -> Flag weg
             if doc_key in manifest:
                 updated += 1
             else:
@@ -534,9 +554,10 @@ async def ingest_paperless(
 
     _save_flagged(project_id, flagged)
 
+    _open_flags = sum(1 for v in flagged.values() if v.get("decision", "open") == "open")
     flag_note = (
-        f" ⚠ {len(flagged)} Dokument(e) geflaggt (übergroß, NICHT verarbeitet) — "
-        f'siehe ingest_status(project_id="{project_id}").' if flagged else ""
+        f" ⚠ {_open_flags} übergroße(s) Dokument(e) warten auf Entscheidung — "
+        f"im Viewer (Port {VIEWER_PORT}) aufnehmen/ignorieren." if _open_flags else ""
     )
 
     if not pending:
@@ -1094,8 +1115,10 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             }
             # Anzahl indexierter Dokumente je Projekt aus dem Ingest-Manifest.
             counts = {p: len(_load_manifest(p)) for p in rendered}
+            # Übergroße, vom Sicherheits-Guard beiseitegelegte Docs zur Entscheidung.
+            flagged = {p: f for p in rendered if (f := _load_flagged(p))}
             body = index_html(items, _ingest_status, meta, _load_backup_cfg(),
-                              project_backups, notice, counts).encode("utf-8")
+                              project_backups, notice, counts, flagged).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -1268,6 +1291,31 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
                 self.send_error(400, "invalid project_id")
                 return
             self.send_response(303)  # zurück zur Landing-Page
+            self.send_header("Location", "/")
+            self.end_headers()
+            return
+        if self.path == "/flagged/decide":
+            # Nutzerentscheidung zu einem geflaggten (übergroßen) Dokument:
+            # approve = trotz Größe aufnehmen, ignore = dauerhaft ausblenden,
+            # open = zurücksetzen (wieder unentschieden). Greift beim nächsten Ingest.
+            length = int(self.headers.get("Content-Length", 0))
+            params = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8"))
+            project_id = (params.get("project_id") or [""])[0]
+            doc_key = (params.get("doc_key") or [""])[0]
+            decision = (params.get("decision") or [""])[0]
+            try:
+                _validate_project(project_id)
+            except ValueError:
+                self.send_error(400, "invalid project_id")
+                return
+            if decision not in ("open", "approve", "ignore"):
+                self.send_error(400, "invalid decision")
+                return
+            flags = _load_flagged(project_id)
+            if doc_key in flags:
+                flags[doc_key]["decision"] = decision
+                _save_flagged(project_id, flags)
+            self.send_response(303)
             self.send_header("Location", "/")
             self.end_headers()
             return

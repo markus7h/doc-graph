@@ -300,6 +300,13 @@ docker compose -f /var/local/mydocker/doc-graph/docker-compose.yml up -d
   neu in die Verarbeitung, unabhängig vom Paperless-Tag. Ein geflaggtes Doc bleibt
   für Re-Ingest offen; sinkt sein Text unter die Schwelle, hebt sich der Flag beim
   nächsten Ingest automatisch auf.
+
+  **Entscheidung im Viewer:** Geflaggte Docs erscheinen in der Landing-Page des
+  Viewers (Port `VIEWER_PORT`) unter ihrer Projekt-Karte mit Buttons. Pro Doc gilt
+  eine `decision`: `open` (Default, wartet), `approve` (trotz Übergröße aufnehmen —
+  greift beim nächsten Ingest, Altlasten-Guard lässt es dann in der Pipeline) oder
+  `ignore` (dauerhaft ausblenden, wird nicht mehr geflaggt). Das Paperless-Quell-
+  dokument bleibt in jedem Fall unberührt — geflaggt heißt nur „nicht im Graph".
 - **`GRAPH_LANGUAGE`** (default `German`): Sprache der extrahierten Entitäten/
   Beschreibungen. LightRAG-Default wäre `English` (Graph-Einträge landen dann
   englisch trotz deutscher Docs). Wirkt nur auf **neu** indexierte Dokumente —

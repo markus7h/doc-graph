@@ -159,19 +159,59 @@ function restoreFromFile(inp){{
 </script>"""
 
 
+def _flagged_section(p: str, flags: dict) -> str:
+    """Übergroße, vom Sicherheits-Guard beiseitegelegte Dokumente pro Projekt mit
+    Entscheidungs-Buttons (Aufnehmen/Ignorieren/Zurücksetzen). flags = {doc_key: info}."""
+    if not flags:
+        return ""
+    _badge = {"approve": ('done', 'aufgenommen'), "ignore": ('', 'ignoriert')}
+
+    def _btn(doc_key: str, decision: str, label: str, ok: bool) -> str:
+        cls = "dec ok" if ok else "dec"
+        return (f'<form method="post" action="/flagged/decide" class="{cls}">'
+                f'<input type="hidden" name="project_id" value="{_esc(p)}">'
+                f'<input type="hidden" name="doc_key" value="{_esc(doc_key)}">'
+                f'<input type="hidden" name="decision" value="{decision}">'
+                f'<button>{label}</button></form>')
+
+    def _item(doc_key: str, info: dict) -> str:
+        title = _esc(str(info.get("title") or doc_key))[:90]
+        chars = info.get("chars") or 0
+        chunks = info.get("est_chunks") or 0
+        dec = info.get("decision", "open")
+        meta = f'<span class="hint">{chars:,} Zeichen ≈ {chunks} Chunks · <code>{_esc(doc_key)}</code></span>'.replace(",", ".")
+        if dec == "open":
+            btns = _btn(doc_key, "approve", "Aufnehmen", True) + _btn(doc_key, "ignore", "Ignorieren", False)
+            state = ""
+        else:
+            bcls, blabel = _badge.get(dec, ('', dec))
+            state = f'<span class="badge {bcls}">{blabel}</span>'
+            btns = _btn(doc_key, "open", "Zurücksetzen", False)
+        return (f'<div class="flagrow"><div class="left">'
+                f'<span class="nm" style="font-size:13px">{title}</span>{meta}{state}</div>'
+                f'<div class="actions">{btns}</div></div>')
+    rows = "\n".join(_item(k, v) for k, v in sorted(flags.items()))
+    return (f'<div class="flagged"><div class="flaghead">⚠ Übergroße Dokumente — '
+            f'nicht indexiert. „Aufnehmen" greift beim nächsten Ingest, „Ignorieren" '
+            f'blendet dauerhaft aus.</div>{rows}</div>')
+
+
 def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: dict | None = None,
                backup_cfg: dict | None = None, project_backups: dict | None = None,
-               notice: str | None = None, counts: dict | None = None) -> str:
+               notice: str | None = None, counts: dict | None = None,
+               flagged: dict | None = None) -> str:
     """Landing-Page für den Viewer-Root. items = (projekt_id, hat_graph_html).
     status = {projekt_id: ingest_status_dict} — zeigt Import-Fortschritt pro Karte.
     meta = {projekt_id: {"project_name": "..."}} — Anzeigenamen.
     counts = {projekt_id: anzahl_indexierter_dokumente} — pro Karte angezeigt.
     backup_cfg — Backup-Zeitplan. project_backups = {projekt_id: [{name,size}]} je Projekt.
+    flagged = {projekt_id: {doc_key: info}} — übergroße Docs zur Nutzerentscheidung.
     Erklärt, was zu sehen ist und wie es weitergeht (statt rohem Dir-Listing)."""
     status = status or {}
     meta = meta or {}
     counts = counts or {}
     project_backups = project_backups or {}
+    flagged = flagged or {}
     # Auto-Refresh auch bei 'paused', damit Fortsetzen/Fortschritt sichtbar wird.
     running = any(s.get("state") in ("running", "paused") for s in status.values())
 
@@ -223,8 +263,9 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
         forms = control_forms + refresh_form + rename_form + backup_forms + delete_form
         cls = "card" if has else "card todo"
         progress = _progress_row(st) if live else ""
+        flags = _flagged_section(p, flagged.get(p, {}))
         return (f'<div class="{cls}"><div class="cardhead"><div class="left">{left}</div>'
-                f'<div class="actions">{forms}</div></div>{progress}</div>')
+                f'<div class="actions">{forms}</div></div>{progress}{flags}</div>')
 
     if items:
         rows = "\n".join(_row(p, has) for p, has in items)
@@ -283,6 +324,18 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
   .bkrow:first-child{{border-top:none}}
   .bktime{{font-weight:600;color:var(--text);min-width:120px}}
   .bksize{{flex:1;color:var(--muted)}}
+  .flagged{{margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}}
+  .flaghead{{font-size:12px;color:#8a6d00;background:#fff8e1;border:1px solid #ffe082;
+    border-radius:6px;padding:6px 10px;margin-bottom:8px}}
+  .flagrow{{display:flex;align-items:center;justify-content:space-between;gap:12px;
+    padding:6px 0;border-top:1px solid var(--border)}}
+  .flagrow:first-of-type{{border-top:none}}
+  .flagrow .left{{flex-direction:column;align-items:flex-start;gap:2px}}
+  .dec, .dec button{{background:none;border:1px solid var(--border);color:var(--muted);
+    border-radius:6px;padding:5px 11px;font-size:12px;cursor:pointer;white-space:nowrap;
+    transition:all .15s;margin:0;display:inline-block}}
+  .dec:hover, .dec button:hover{{border-color:#888;color:var(--text);background:var(--bg)}}
+  .dec.ok:hover, .dec.ok button:hover{{border-color:var(--accent);color:var(--accent);background:#edf7ee}}
 </style></head><body>
 <div class="brand">{_LOGO}<h1>doc-graph</h1></div>
 <p class="sub">Knowledge Graphs aus deinen Dokumenten — pro Projekt ein Graph. Klick ein Projekt an, um den interaktiven Graphen zu öffnen.</p>
