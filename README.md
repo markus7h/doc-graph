@@ -31,8 +31,10 @@ MCP-Server stattdessen selbst eine lazy geladene LightRAG-Instanz pro
 Extraktion und Embeddings laufen über den **geteilten llm-stack** (eigenes
 Compose-Projekt, Repo `llm-stack`): Extraktion via Netz-Alias `llm` (zeigt auf
 das aktive Chat-Modell — Normalbetrieb `llm-mistral`/`mistral-small3.2:24b`,
-während des Ingests `llm-qwen`/`qwen3-14b`) + Embeddings via `llm-embed`
-(`bge-m3`, CPU, 1024-dim).
+während des Ingests `llm-qwen`/`qwen3-14b`) + Embeddings via Netz-Alias `embed`
+(`bge-m3`, 1024-dim). Der Embedder swappt mit: Normalbetrieb `llm-embed` (CPU),
+während des Ingests `llm-embed-gpu` (voll auf die GPU neben qwen) — Chunk-
+Embeddings ~10–50× schneller, keine CPU-`Worker execution timeout`-Failures.
 
 Warum geteilt statt eigenes Modell: Auf ~16 GB VRAM (RTX 5080, geteilt mit dem
 Desktop) läuft mistral dauergeladen (`-c 32768`, partial offload `-ngl 27`,
@@ -257,7 +259,11 @@ docker compose -f /var/local/mydocker/doc-graph/docker-compose.yml up -d
   **automatisch bei jedem Ingest**: sobald `ingest_paperless`/`ingest_directory`
   Dokumente extrahiert, ruft der Server `swap-to-qwen.sh` (`docker stop llm-mistral`
   + `docker start llm-qwen`; beide teilen den Netz-Alias `llm`, LLM_BASE_URL bleibt
-  unverändert); nach Abschluss `swap-to-mistral.sh` (zurück auf mistral). paperless-ai
+  unverändert). Dasselbe Skript swappt auch den **Embedder** auf die GPU (`docker
+  stop llm-embed` + `docker start llm-embed-gpu`, gemeinsamer Alias `embed`) —
+  bge-m3 voll auf die GPU neben qwen, damit die Chunk-Embeddings nicht am CPU-
+  Timeout sterben. Nach Abschluss `swap-to-mistral.sh` (qwen + GPU-Embedder raus,
+  mistral + CPU-Embedder zurück). paperless-ai
   wird dabei NICHT mehr pausiert — es ist auf `llm-mistral` gepinnt und bekommt nie
   qwen-Antworten; seine UI zeigt während des Swaps „Modell offline".
   Paralleler Ingest über mehrere Projekte swappt per Refcount nur

@@ -14,7 +14,10 @@ services:
       LLM_BASE_URL: ${LLM_BASE_URL:-http://llm:11434/v1}
       LLM_MODEL: ${LLM_MODEL:-mistral-small3.2:24b}
       # --- Embeddings: eigener CPU-llama-server (bge-m3), separater Port ---
-      EMBED_BASE_URL: ${EMBED_BASE_URL:-http://llm-embed:11435/v1}
+      # Alias 'embed' (llm-stack) -> aktiver Embedder: CPU (llm-embed) im Normal-
+      # betrieb, GPU (llm-embed-gpu) während des Ingest-Swaps. Docker-DNS löst nur
+      # laufende Container, der Swap garantiert genau einen.
+      EMBED_BASE_URL: ${EMBED_BASE_URL:-http://embed:11435/v1}
       EMBED_MODEL: ${EMBED_MODEL:-bge-m3}
       EMBED_DIM: ${EMBED_DIM:-1024}
       # --- Paperless-NGX (Dokumentquelle): via LAN-DNS 'paperless' erreichbar ---
