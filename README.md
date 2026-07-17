@@ -288,6 +288,18 @@ docker compose -f /var/local/mydocker/doc-graph/docker-compose.yml up -d
   nur Voll-GPU-Extraktion (`swap-to-qwen.sh`), nicht ein höherer Timeout.
 - **`MAX_ASYNC`** (default 2): parallele LLM-Calls. Bei dichten Beständen / knapper
   GPU auf `1` setzen, damit ein Poison-Doc nicht den ganzen Durchsatz frisst.
+- **`MAX_DOC_CHARS`** (default 300000 ≈ 125 Chunks): Sicherheits-Guard beim
+  Ingest. Docs mit mehr Textzeichen werden **nicht** verarbeitet, sondern in
+  `ingest_flagged.json` beiseitegelegt und in `ingest_status` unter `flagged`
+  ausgewiesen — schützt vor Datenmüll (z. B. einem 48-MB-CSV-Export mit ~39k
+  Chunks, der den Graph flutet und stundenlang die GPU bindet). Zwei Ebenen:
+  (1) beim Einsammeln aus Paperless werden übergroße Docs gar nicht erst
+  eingereiht; (2) ein **Altlasten-Guard** entfernt vor jedem Lauf übergroße Docs,
+  die aus früheren Läufen noch in LightRAGs `doc_status`-Pipeline hängen
+  (`pending`/`processing`/`failed`) — sonst zieht LightRAG sie bei jedem `ainsert`
+  neu in die Verarbeitung, unabhängig vom Paperless-Tag. Ein geflaggtes Doc bleibt
+  für Re-Ingest offen; sinkt sein Text unter die Schwelle, hebt sich der Flag beim
+  nächsten Ingest automatisch auf.
 - **`GRAPH_LANGUAGE`** (default `German`): Sprache der extrahierten Entitäten/
   Beschreibungen. LightRAG-Default wäre `English` (Graph-Einträge landen dann
   englisch trotz deutscher Docs). Wirkt nur auf **neu** indexierte Dokumente —

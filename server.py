@@ -61,6 +61,12 @@ LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "480"))
 # Chunk -> kürzere Extraktion, beseitigt den 480s-Worker-Timeout bei dichten
 # Tabellen-/Listen-Docs (siehe INGEST-FAILURE-ANALYSE.md).
 CHUNK_TOKEN_SIZE = int(os.environ.get("CHUNK_TOKEN_SIZE", "600"))
+# Sicherheits-Guard: Dokumente über dieser Textlänge (Zeichen) werden NICHT
+# ingestiert, sondern geflaggt (ingest_flagged.json) und dem Nutzer zur Prüfung
+# vorgelegt. Schützt vor Datenmüll wie einem 50-MB-CSV-Export, der zehntausende
+# Chunks erzeugt, den Graph flutet und stundenlang die GPU bindet.
+# 300k Zeichen ~ 125 Chunks — großzügig über jedem echten Versicherungs-PDF.
+MAX_DOC_CHARS = int(os.environ.get("MAX_DOC_CHARS", "300000"))
 # Kontext-Budget je Query (Tokens). 12000 statt Default 30000: hält den
 # only_context-Dump unter dem MCP-Token-Limit (Issue #2) und fokussiert.
 QUERY_MAX_TOKENS = int(os.environ.get("QUERY_MAX_TOKENS", "12000"))
@@ -253,6 +259,59 @@ def _save_manifest(project: str, manifest: dict) -> None:
     _manifest_path(project).write_text(json.dumps(manifest, indent=1))
 
 
+# Geflaggte Dokumente: doc_key -> {title, chars, est_chunks, reason, at}.
+# Vom Sicherheits-Guard beiseitegelegt (nicht ingestiert), bis der Nutzer
+# entscheidet. Getrennt vom Manifest, damit ein Reingest sie nicht als
+# "erledigt" behandelt.
+def _flagged_path(project: str) -> Path:
+    return PROJECTS_DIR / project / "ingest_flagged.json"
+
+
+def _load_flagged(project: str) -> dict:
+    p = _flagged_path(project)
+    return json.loads(p.read_text()) if p.exists() else {}
+
+
+def _save_flagged(project: str, flagged: dict) -> None:
+    _flagged_path(project).write_text(json.dumps(flagged, indent=1, ensure_ascii=False))
+
+
+async def _purge_stuck_oversized(project_id: str, rag) -> None:
+    """Altlasten-Guard: übergroße Docs, die aus früheren Läufen in LightRAGs
+    doc_status-Pipeline hängen (pending/processing/failed), zieht LightRAG bei
+    JEDEM ainsert wieder in die Verarbeitung — unabhängig vom Paperless-Tag. Der
+    Sammel-Guard in ingest_paperless sieht sie nicht (nicht mehr im Tag-Query).
+    Hier einmal per adelete_by_doc_id entfernen und flaggen, sonst frisst so ein
+    Poison-Doc (z.B. ein 48-MB-CSV -> 39k Chunks) jeden Ingest-Lauf neu."""
+    p = PROJECTS_DIR / project_id / "kv_store_doc_status.json"
+    if not p.exists():
+        return
+    stuck = {
+        k: v for k, v in json.loads(p.read_text()).items()
+        if v.get("status") != "processed" and (v.get("content_length") or 0) > MAX_DOC_CHARS
+    }
+    if not stuck:
+        return
+    flagged = _load_flagged(project_id)
+    for key, v in stuck.items():
+        clen = v.get("content_length") or 0
+        try:
+            async with _insert_lock:
+                await rag.adelete_by_doc_id(key)
+        except Exception:  # noqa: BLE001 — best effort; im Fehlerfall bleibt es hängen
+            log.exception("adelete_by_doc_id(%s) fehlgeschlagen", key)
+            continue
+        flagged[key] = {
+            "title": (v.get("content_summary") or key)[:80],
+            "chars": clen,
+            "est_chunks": clen // max(1, CHUNK_TOKEN_SIZE * 4),
+            "reason": f"übergroß, aus hängender LightRAG-Pipeline entfernt (>{MAX_DOC_CHARS})",
+            "at": _now(),
+        }
+        log.warning("Poison-Doc %s (%d Zeichen) aus LightRAG entfernt und geflaggt", key, clen)
+    _save_flagged(project_id, flagged)
+
+
 def _doc_status_counts(project: str) -> dict:
     """Echte Terminal-Zustände je Dokument aus LightRAGs doc_status-Store
     (pending/processing/processed/failed). Der 'done'-Zustand der Dispatch-
@@ -425,8 +484,9 @@ async def ingest_paperless(
 
     rag = await get_rag(project_id)
     manifest = _load_manifest(project_id)
+    flagged = _load_flagged(project_id)
 
-    new, updated, skipped, pending = 0, 0, 0, []  # pending: (doc_key, text, hash)
+    new, updated, skipped, flagged_new, pending = 0, 0, 0, 0, []  # pending: (doc_key, text, hash)
 
     async with _paperless_client() as client:
         # Korrespondenten-/Tag-/Dokumenttyp-Namen einmal auflösen (IDs -> Namen)
@@ -452,6 +512,18 @@ async def ingest_paperless(
             if manifest.get(doc_key) == h:
                 skipped += 1
                 continue
+            # Sicherheits-Guard: übergroße Dokumente beiseitelegen statt ingestieren.
+            if len(text) > MAX_DOC_CHARS:
+                flagged[doc_key] = {
+                    "title": doc.get("title") or doc_key,
+                    "chars": len(text),
+                    "est_chunks": len(text) // max(1, CHUNK_TOKEN_SIZE * 4),
+                    "reason": f"Text {len(text)} Zeichen > MAX_DOC_CHARS ({MAX_DOC_CHARS})",
+                    "at": _now(),
+                }
+                flagged_new += 1
+                continue
+            flagged.pop(doc_key, None)  # war es mal geflaggt, jetzt klein genug -> frei
             if doc_key in manifest:
                 updated += 1
             else:
@@ -460,10 +532,17 @@ async def ingest_paperless(
             # Insert im Hintergrund, damit ein Abbruch das Dokument nicht "erledigt".
             pending.append((doc_key, text, h))
 
+    _save_flagged(project_id, flagged)
+
+    flag_note = (
+        f" ⚠ {len(flagged)} Dokument(e) geflaggt (übergroß, NICHT verarbeitet) — "
+        f'siehe ingest_status(project_id="{project_id}").' if flagged else ""
+    )
+
     if not pending:
         return (
             f"Projekt '{project_id}': nichts zu tun ({skipped} unverändert). "
-            f"Gesamt im Index: {len(manifest)} Dokumente."
+            f"Gesamt im Index: {len(manifest)} Dokumente.{flag_note}"
         )
 
     if _ingest_status.get(project_id, {}).get("state") == "running":
@@ -493,6 +572,9 @@ async def ingest_paperless(
 
     async def _run():
         done = 0
+        # Altlasten-Guard vor dem ersten ainsert: hängende übergroße Docs raus,
+        # sonst zieht LightRAG sie automatisch wieder in die Verarbeitung.
+        await _purge_stuck_oversized(project_id, rag)
         stop = asyncio.Event()
         poller = asyncio.create_task(_poll_msg(stop))
         # ponytail-Invariante: swapped == "ein _swap_begin ohne passendes _swap_end
@@ -563,7 +645,7 @@ async def ingest_paperless(
         f"Projekt '{project_id}': Ingest von {total} Dokumenten "
         f"({new} neu, {updated} aktualisiert, {skipped} übersprungen) "
         f"im Hintergrund gestartet — Extraktion läuft, das dauert. "
-        f'Fortschritt: ingest_status(project_id="{project_id}").'
+        f'Fortschritt: ingest_status(project_id="{project_id}").{flag_note}'
     )
 
 
@@ -580,6 +662,10 @@ async def ingest_status(project_id: str) -> str:
     # processing/pending/failed hier sichtbar, auch wenn state='done' (Dispatch fertig).
     if docs:
         out["docs"] = docs
+    # Vom Sicherheits-Guard beiseitegelegte übergroße Dokumente — zur Nutzerprüfung.
+    flagged = _load_flagged(project_id)
+    if flagged:
+        out["flagged"] = flagged
     return json.dumps(out, ensure_ascii=False)
 
 

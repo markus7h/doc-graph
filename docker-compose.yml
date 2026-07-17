@@ -29,6 +29,10 @@ services:
       BACKUP_DIR: /backups
       MAX_BACKUPS: ${MAX_BACKUPS:-10}
       MAX_ASYNC: ${MAX_ASYNC:-2}
+      # Sicherheits-Guard: Docs über dieser Zeichenzahl werden geflaggt statt
+      # ingestiert (siehe README). 400k (~166 Chunks) lässt große Fachdokumente
+      # durch, fängt aber Kalender-/CSV-Exporte (490k+).
+      MAX_DOC_CHARS: ${MAX_DOC_CHARS:-400000}
       # Timeout je LLM-Call (s). Bei CPU-Offload/niedrigem t/s hochsetzen. ---
       LLM_TIMEOUT: ${LLM_TIMEOUT:-480}
     volumes:
