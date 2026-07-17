@@ -288,6 +288,13 @@ docker compose -f /var/local/mydocker/doc-graph/docker-compose.yml up -d
   nur Voll-GPU-Extraktion (`swap-to-qwen.sh`), nicht ein höherer Timeout.
 - **`MAX_ASYNC`** (default 2): parallele LLM-Calls. Bei dichten Beständen / knapper
   GPU auf `1` setzen, damit ein Poison-Doc nicht den ganzen Durchsatz frisst.
+- **`EMBED_MAX_ASYNC`** (default 3) / **`EMBED_TIMEOUT`** (default 180 s):
+  Robustheit des Embedding-Pfads. `bge-m3` läuft auf CPU (die GPU hat während des
+  Ingests qwen). Die LightRAG-Defaults (`max_async=8`, `timeout=30 s`) überfluten
+  den CPU-Embedder → `Worker execution timeout` → `IndexFlushError` → das **ganze
+  Dokument failt**, obwohl die Extraktion längst durch war. Weniger Parallelität +
+  großzügigerer Timeout beheben das. Dauerhaft schneller wird es erst mit `bge-m3`
+  auf der GPU (Platz neben qwen) statt CPU.
 - **`MAX_DOC_CHARS`** (default 300000 ≈ 125 Chunks): Sicherheits-Guard beim
   Ingest. Docs mit mehr Textzeichen werden **nicht** verarbeitet, sondern in
   `ingest_flagged.json` beiseitegelegt und in `ingest_status` unter `flagged`

@@ -53,6 +53,12 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "mistral-small3.2:24b")
 EMBED_MODEL = os.environ.get("EMBED_MODEL", "bge-m3")
 EMBED_DIM = int(os.environ.get("EMBED_DIM", "1024"))
 MAX_ASYNC = int(os.environ.get("MAX_ASYNC", "2"))
+# Embedding-Robustheit: bge-m3 läuft auf CPU (GPU hat qwen). LightRAG-Defaults
+# (max_async=8, timeout=30s) überfluten den CPU-Embedder -> Worker-Timeout ->
+# IndexFlushError -> ganzes Doc failt, obwohl die Extraktion schon durch war.
+# Weniger Parallelität + großzügigerer Timeout = robuste Einbettung.
+EMBED_MAX_ASYNC = int(os.environ.get("EMBED_MAX_ASYNC", "3"))
+EMBED_TIMEOUT = int(os.environ.get("EMBED_TIMEOUT", "180"))
 # Timeout (s) für einen einzelnen LLM-Call an den llama-server. Bei CPU-Offload
 # (niedriger t/s) reißen dichte Chunks den Default -> hier hochsetzen. Der
 # eigentliche Engpass bleibt der Throughput (GPU), das ist nur der Deckel.
@@ -73,6 +79,10 @@ QUERY_MAX_TOKENS = int(os.environ.get("QUERY_MAX_TOKENS", "12000"))
 # Sprache der extrahierten Entitäten/Beschreibungen. LightRAG-Default ist
 # "English" -> Graph-Einträge landen auf Englisch, obwohl die Docs deutsch sind.
 GRAPH_LANGUAGE = os.environ.get("GRAPH_LANGUAGE", "German")
+# Obergrenze gleichzeitig im Viewer geladener Entitäten. Der Graph kann tausende
+# Knoten haben; vis.js-Physik wird darüber unbrauchbar langsam und das HTML riesig.
+# Der /<proj>/nodes-Endpoint deckelt jedes Subset hierauf (Priorisierung: Knotengrad).
+MAX_GRAPH_NODES = int(os.environ.get("GRAPH_MAX_NODES", "2500"))
 
 
 async def _llm_model_func(prompt, system_prompt=None, history_messages=None, **kwargs):
@@ -90,7 +100,9 @@ async def _llm_model_func(prompt, system_prompt=None, history_messages=None, **k
 # dessen Decorator erzwingt embedding_dim=1536 (ada-002) und validiert hart dagegen —
 # unvereinbar mit bge-m3 (1024). Hier gilt allein EmbeddingFunc(embedding_dim=EMBED_DIM).
 async def _embed_func(texts):
-    async with httpx.AsyncClient(timeout=120) as client:
+    # httpx-Timeout >= LightRAGs default_embedding_timeout, sonst schlägt der
+    # Client zu, bevor LightRAG selbst tolerieren würde.
+    async with httpx.AsyncClient(timeout=EMBED_TIMEOUT) as client:
         r = await client.post(
             f"{EMBED_BASE_URL}/embeddings",
             json={"model": EMBED_MODEL, "input": list(texts)},
@@ -228,6 +240,9 @@ async def get_rag(project: str) -> LightRAG:
             llm_model_max_async=MAX_ASYNC,
             chunk_token_size=CHUNK_TOKEN_SIZE,
             addon_params={"language": GRAPH_LANGUAGE},
+            # CPU-Embedder nicht überfluten + großzügiger Timeout (siehe oben).
+            embedding_func_max_async=EMBED_MAX_ASYNC,
+            default_embedding_timeout=EMBED_TIMEOUT,
             embedding_func=EmbeddingFunc(
                 embedding_dim=EMBED_DIM,
                 max_token_size=8192,
@@ -821,12 +836,113 @@ def _get_project_name(project_id: str) -> str:
     return meta.get("project_name") or project_id
 
 
-def _render_project_graphs(current_id: str | None = None) -> tuple[int, int]:
-    """Rendert alle Projekt-Graphen aus ihren .graphml-Dateien (keine LLM-Extraktion).
-    Nutzt project_name aus Meta für Titel. Liefert (nodes, edges) für current_id,
-    oder (-1, -1) wenn current_id keinen Graph hat. SYNCHRON (kein asyncio)."""
+# ----------------------------------------------------------------------------
+# Graph-Viewer: live gedeckelte Knoten/Kanten aus dem GraphML
+# ----------------------------------------------------------------------------
+# Der Viewer bettet die Knoten nicht mehr komplett ein, sondern lädt sie per
+# fetch über /<proj>/nodes — serverseitig auf MAX_GRAPH_NODES gedeckelt. Das
+# Parsen der GraphML ist der teure Teil und wird pro Projekt über die Datei-mtime
+# gecacht (invalidiert automatisch, sobald ein Ingest/Restore die Datei ändert).
+_graph_cache: dict[str, tuple[float, "object", dict]] = {}
+
+
+def _graphml_path(project_id: str) -> Path | None:
+    return next((PROJECTS_DIR / project_id).glob("*.graphml"), None)
+
+
+def _load_graph_cached(project_id: str):
+    """(G, degree) für ein Projekt, gecacht über die graphml-mtime.
+    None, wenn das Projekt (noch) keinen Graphen hat."""
     import networkx as nx
 
+    path = _graphml_path(project_id)
+    if path is None:
+        return None
+    mtime = path.stat().st_mtime
+    cached = _graph_cache.get(project_id)
+    if cached and cached[0] == mtime:
+        return cached[1], cached[2]
+    G = nx.read_graphml(str(path))
+    degree = dict(G.degree())
+    _graph_cache[project_id] = (mtime, G, degree)
+    return G, degree
+
+
+def _node_dict(n, d: dict) -> dict:
+    etype = d.get("entity_type", "")
+    return {"id": n, "label": str(n).strip('"'), "group": etype,
+            "color": color_for(etype), "desc": d.get("description", "")[:400]}
+
+
+def _edge_dict(u, v, d: dict) -> dict:
+    tip = d.get("description") or d.get("keywords") or ""
+    return {"from": u, "to": v, "desc": str(tip)[:400]}
+
+
+def _graph_subset(G, degree: dict, *, limit: int = MAX_GRAPH_NODES,
+                  focus: str | None = None, depth: int = 1,
+                  q: str | None = None, hide: set[str] | None = None) -> dict:
+    """Baut ein auf `limit` gedeckeltes Knoten/Kanten-Subset für den Viewer.
+    Priorisierung beim Deckeln: Knotengrad (mangels Score-Feld im GraphML).
+    Liefert {nodes, edges, total, shown, capped, types}. `total` = Größe der
+    (gefilterten) Kandidatenmenge vor dem Deckeln; `types` immer über den GANZEN
+    Graph, damit die Legende stabil bleibt."""
+    limit = max(1, min(limit, MAX_GRAPH_NODES))
+    hide = hide or set()
+
+    types: dict[str, int] = {}
+    for _, d in G.nodes(data=True):
+        t = d.get("entity_type", "")
+        types[t] = types.get(t, 0) + 1
+
+    def _visible(n) -> bool:
+        return G.nodes[n].get("entity_type", "") not in hide
+
+    if focus is not None and focus in G:
+        # BFS-Nachbarschaft bis `depth` Hops um den Anker.
+        seen = {focus}
+        frontier = {focus}
+        for _ in range(max(1, depth)):
+            nxt: set = set()
+            for u in frontier:
+                nxt.update(G.neighbors(u))
+            nxt -= seen
+            seen |= nxt
+            frontier = nxt
+        selected = [n for n in seen if _visible(n)]
+    elif q:
+        ql = q.strip().lower()
+        hits = [n for n in G.nodes if _visible(n) and ql in str(n).strip('"').lower()]
+        ctx = set(hits)  # Treffer + direkte Nachbarn als Kontext
+        for h in hits:
+            ctx.update(nb for nb in G.neighbors(h) if _visible(nb))
+        selected = list(ctx)
+    else:
+        selected = [n for n in G.nodes if _visible(n)]
+
+    total = len(selected)
+    capped = total > limit
+    if capped:
+        selected.sort(key=lambda n: degree.get(n, 0), reverse=True)
+        selected = selected[:limit]
+
+    sel = set(selected)
+    nodes = [_node_dict(n, G.nodes[n]) for n in selected]
+    edges = [_edge_dict(u, v, d) for u, v, d in G.edges(data=True)
+             if u in sel and v in sel]
+    return {
+        "nodes": nodes, "edges": edges,
+        "total": total, "shown": len(nodes), "capped": capped,
+        "types": [{"type": t, "color": color_for(t), "count": c}
+                  for t, c in sorted(types.items())],
+    }
+
+
+def _render_project_graphs(current_id: str | None = None) -> tuple[int, int]:
+    """Schreibt für jedes Projekt die Viewer-Shell (graph.html); die Knoten/Kanten
+    lädt der Browser live über /<proj>/nodes (serverseitig auf MAX_GRAPH_NODES
+    gedeckelt). Liefert die Gesamtzahl (nodes, edges) für current_id, oder (-1, -1)
+    wenn current_id keinen Graph hat. SYNCHRON (kein asyncio)."""
     projs = sorted(
         p.name for p in PROJECTS_DIR.iterdir()
         if p.is_dir() and any(p.glob("*.graphml"))
@@ -834,23 +950,15 @@ def _render_project_graphs(current_id: str | None = None) -> tuple[int, int]:
     names = {proj: _get_project_name(proj) for proj in projs}
 
     def _render(proj_id: str) -> tuple[int, int]:
-        G = nx.read_graphml(str(next((PROJECTS_DIR / proj_id).glob("*.graphml"))))
-        nodes, edges = [], []
-        for n, d in G.nodes(data=True):
-            etype = d.get("entity_type", "")
-            nodes.append({
-                "id": n, "label": str(n).strip('"'), "group": etype,
-                "color": color_for(etype),
-                "desc": d.get("description", "")[:400],
-            })
-        for u, v, d in G.edges(data=True):
-            tip = d.get("description") or d.get("keywords") or ""
-            edges.append({"from": u, "to": v, "desc": str(tip)[:400]})
+        loaded = _load_graph_cached(proj_id)
         proj_name = names[proj_id]
         (PROJECTS_DIR / proj_id / "graph.html").write_text(
-            graph_html(nodes, edges, f"KG: {proj_name}", projects=projs, current=proj_id, names=names),
+            graph_html(f"KG: {proj_name}", projects=projs, current=proj_id, names=names),
             encoding="utf-8")
-        return len(nodes), len(edges)
+        if loaded is None:
+            return 0, 0
+        G = loaded[0]
+        return G.number_of_nodes(), G.number_of_edges()
 
     n_nodes = n_edges = -1
     for p in projs:
@@ -1125,7 +1233,48 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        # Live-Graph-API: /<proj>/nodes -> serverseitig gedeckeltes JSON-Subset,
+        # das der Viewer per fetch lädt (statt eines eingebetteten Voll-Payloads).
+        m = re.match(r"^/([^/]+)/nodes$", parsed.path)
+        if m:
+            self._serve_nodes(urllib.parse.unquote(m.group(1)), parsed.query)
+            return
         super().do_GET()
+
+    def _serve_nodes(self, project_id: str, query: str):
+        """Antwortet mit dem gedeckelten Knoten/Kanten-JSON für den Viewer."""
+        try:
+            _validate_project(project_id)
+        except ValueError:
+            self.send_error(400, "invalid project_id")
+            return
+        loaded = _load_graph_cached(project_id)
+        if loaded is None:
+            self.send_error(404, "kein Graph fuer dieses Projekt")
+            return
+        G, degree = loaded
+        q = urllib.parse.parse_qs(query)
+
+        def _int(name: str, default: int) -> int:
+            try:
+                return int((q.get(name) or [str(default)])[0])
+            except (ValueError, TypeError):
+                return default
+
+        focus = (q.get("focus") or [""])[0] or None
+        term = (q.get("q") or [""])[0] or None
+        hide = {t for t in (q.get("hide") or [""])[0].split(",") if t}
+        sub = _graph_subset(
+            G, degree,
+            limit=_int("limit", MAX_GRAPH_NODES),
+            focus=focus, depth=_int("depth", 1), q=term, hide=hide,
+        )
+        body = json.dumps(sub).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_POST(self):  # noqa: N802 (stdlib-Signatur)
         if self.path == "/refresh":
