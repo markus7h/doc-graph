@@ -37,10 +37,20 @@ def _status_badge(st: dict) -> str:
     state = st.get("state")
     total = st.get("total", "?")
     if state == "running":
+        # 'done' zählt nur die Dispatch-Schleife und unterschätzt massiv, weil
+        # LightRAG im Batch verarbeitet. Echter Fortschritt = doc_status.processed
+        # gegen alle getaggten Docs (new+updated+skipped).
+        docs = st.get("docs") or {}
+        proc = docs.get("processed", st.get("done", 0))
+        tagged = (st.get("new", 0) + st.get("updated", 0) + st.get("skipped", 0)) or total
+        inprog = sum(docs.get(k, 0) for k in ("processing", "analyzing", "parsing", "pending"))
+        failed = docs.get("failed", 0)
+        extra = f" · {inprog} in Arbeit" if inprog else ""
+        extra += f" · {failed} fehlgeschlagen" if failed else ""
         msg = st.get("msg")
         detail = f' · {_esc(msg)}' if msg else ""
-        return (f'<span class="badge run">⏳ Ingest läuft — {st.get("done", 0)}/{total} '
-                f'Dokumente fertig{detail}</span>')
+        return (f'<span class="badge run">⏳ Ingest läuft — {proc}/{tagged} '
+                f'Dokumente im Graph{extra}{detail}</span>')
     if state == "paused":
         return (f'<span class="badge run">⏸ Ingest pausiert — {st.get("done", 0)}/{total} '
                 f'Dokumente fertig (GPU freigegeben)</span>')
@@ -58,8 +68,13 @@ def _status_badge(st: dict) -> str:
 def _progress_row(st: dict) -> str:
     """Vollbreite Fortschrittszeile für einen laufenden/pausierten Ingest:
     Balken (done/total) + Status-Badge. Ersetzt das gequetschte Inline-Badge."""
-    done = st.get("done", 0)
-    total = st.get("total") if isinstance(st.get("total"), int) else 0
+    # Fortschritt an den echten LightRAG-Zuständen (processed), nicht am
+    # Dispatch-Zähler 'done' — LightRAG batcht, 'done' bleibt lange 0.
+    docs = st.get("docs") or {}
+    done = docs.get("processed", st.get("done", 0))
+    total = (st.get("new", 0) + st.get("updated", 0) + st.get("skipped", 0))
+    if not total:
+        total = st.get("total") if isinstance(st.get("total"), int) else 0
     pct = int(done / total * 100) if total else 0
     fill_cls = "fill paused" if st.get("state") == "paused" else "fill"
     return (f'<div class="prog"><div class="bar"><div class="{fill_cls}" '
@@ -372,12 +387,13 @@ def _project_select(projects: list[str] | None, current: str, names: dict[str, s
             f"{opts}</select></label>")
 
 
-def graph_html(nodes: list[dict], edges: list[dict], title: str,
-               projects: list[str] | None = None, current: str = "", names: dict[str, str] | None = None) -> str:
-    """Baut aus Knoten/Kanten-Dicts ein eigenständiges vis-network-HTML.
+def graph_html(title: str, projects: list[str] | None = None,
+               current: str = "", names: dict[str, str] | None = None) -> str:
+    """Baut die eigenständige vis-network-Shell. Die Knoten/Kanten sind NICHT
+    eingebettet — der Browser lädt sie live über den relativen Endpoint
+    `nodes?…` (serverseitig auf max. Knotenzahl gedeckelt, Priorisierung nach
+    Knotengrad). Filter/Fokus/Suche sind je ein Server-Roundtrip.
     names = {project_id: display_name} für Dropdown und Refresh-Button."""
-    # json.dumps escaped '<' nicht; </script> in Daten würde das Script sprengen.
-    payload = json.dumps({"nodes": nodes, "edges": edges}).replace("<", "\\u003c")
     proj_select = _project_select(projects, current, names)
     return f"""<!doctype html>
 <html lang="de"><head><meta charset="utf-8">

@@ -1225,7 +1225,15 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             counts = {p: len(_load_manifest(p)) for p in rendered}
             # Übergroße, vom Sicherheits-Guard beiseitegelegte Docs zur Entscheidung.
             flagged = {p: f for p in rendered if (f := _load_flagged(p))}
-            body = index_html(items, _ingest_status, meta, _load_backup_cfg(),
+            # Echte LightRAG-Zustände in den Status mischen (Kopie, nicht mutieren):
+            # die UI zeigt Fortschritt an 'processed', nicht am Dispatch-Zähler 'done'.
+            status_view = {}
+            for name, s in _ingest_status.items():
+                sc = {k: v for k, v in s.items() if not k.startswith("_")}
+                if s.get("state") in ("running", "paused"):
+                    sc["docs"] = _doc_status_counts(name)
+                status_view[name] = sc
+            body = index_html(items, status_view, meta, _load_backup_cfg(),
                               project_backups, notice, counts, flagged).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
