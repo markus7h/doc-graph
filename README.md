@@ -151,13 +151,12 @@ aufrufen muss. Jede Karte hat folgende Buttons (**Icon-only** mit Inline-SVG —
 rendern zuverlässig unabhängig vom Emoji-Font; die Beschriftung erscheint als
 Tooltip erst nach kurzem Verweilen mit der Maus, Löschen hovert rot, der Rest grün):
 
-- **Pause / Fortsetzen / Stop** (nur bei laufendem/pausiertem Ingest): wirkt
-  **sofort** — das laufende Dokument wird mitten in der Verarbeitung abgebrochen
-  (POST `/ingest/control`, serverseitig derselbe Weg wie das MCP-Tool
-  `ingest_control`). **Stop** bricht ab; das gerade laufende Dokument geht verloren
-  (bereits fertig indexierte Dokumente bleiben). **Pause** gibt die GPU frei (mistral
-  zurück für paperless-ai); **Fortsetzen** lädt qwen neu und verarbeitet das
-  abgebrochene Dokument komplett neu (kein halb-indexierter Stand).
+- **Pause / Fortsetzen / Stop** (nur bei laufendem/pausiertem Ingest): greift
+  **nach dem aktuellen Batch** (`INGEST_BATCH` Docs, default 5 — ein Batch wird
+  immer ganz zu Ende geführt; POST `/ingest/control`, serverseitig derselbe Weg
+  wie das MCP-Tool `ingest_control`). **Stop** bricht danach ab (bereits fertig
+  indexierte Dokumente bleiben). **Pause** gibt die GPU frei (mistral zurück für
+  paperless-ai); **Fortsetzen** lädt qwen neu und macht beim nächsten Batch weiter.
 - **Erstellen/Aktualisieren:** Rendert den Graphen aus `.graphml` (POST `/refresh`).
 - **Umbenennen:** Öffnet ein Eingabefeld für den neuen Anzeigenamen (POST `/rename`).
 - **Löschen:** Entfernt den Projekt-Index nach Browser-Bestätigung (Quelldokumente
@@ -255,8 +254,8 @@ docker compose -f /var/local/mydocker/doc-graph/docker-compose.yml up -d
 | `list_projects()` | Projekte + Dokumentzahl (zeigt project_id, optional Anzeigename in Klammern) |
 | `ingest_paperless(project_id, tag/document_type/correspondent/query_text, regelwerk)` | Delta-Indexierung aus Paperless (Hash-Manifest, nur Neues/Geändertes) — Extraktion läuft im Hintergrund, das Tool kehrt sofort zurück. `regelwerk=True` für Bedingungswerke/Verträge (siehe unten) |
 | `ingest_status(project_id)` | Fortschritt/Ergebnis des laufenden bzw. letzten Ingest-Laufs. Feld `docs` zeigt die **echten** LightRAG-Zustände (`processed`/`processing`/`pending`/`failed`) — nur `processed` heißt wirklich im Graph; `state:done` heißt nur „Dispatch fertig" |
-| `ingest_control(project_id, action)` | Steuert einen laufenden Ingest: `pause` (bricht das laufende Dokument sofort ab und gibt die GPU frei → mistral zurück für paperless-ai), `resume` (lädt qwen neu, verarbeitet das abgebrochene Dokument neu), `stop` (bricht sofort ab; das laufende Dokument geht verloren, bereits fertig Indexiertes bleibt) |
-| `ingest_directory(project_id, subpath, regelwerk)` | .txt/.md/.pdf aus gemountetem Verzeichnis (PDF via pdftotext, kein OCR — gescannte Bilder über Paperless) |
+| `ingest_control(project_id, action)` | Steuert einen laufenden Ingest: `pause` (hält nach dem aktuellen Batch und gibt die GPU frei → mistral zurück für paperless-ai), `resume` (lädt qwen neu, macht beim nächsten Batch weiter), `stop` (hält nach dem aktuellen Batch, bereits fertig Indexiertes bleibt) |
+| `ingest_directory(project_id, subpath, regelwerk)` | .txt/.md/.pdf aus gemountetem Verzeichnis (PDF via pdftotext, kein OCR — gescannte Bilder über Paperless). Läuft wie `ingest_paperless` im Hintergrund (steuerbar via `ingest_control`/`ingest_status`) und kehrt sofort zurück |
 | `query(project_id, question, mode, only_context, max_total_tokens)` | Abfrage: local / global / hybrid / mix / naive. `only_context` ist **default True** (Claude formuliert aus dem Kontext); die lokale LLM-Formulierung ist auf geteilter GPU zu langsam. `max_total_tokens` (default 12000) deckelt den Kontext, damit er das MCP-Token-Limit nicht sprengt |
 | `get_entity(project_id, entity_name)` | Alle Fakten/Relationen zu einer Entität |
 | `get_clause(project_id, clause, document)` | **Regelwerk-Projekte:** exakter Wortlaut einer Klausel (`'§ 2'`, `'§2'`, `'2'`, `'Artikel 3'`) — deterministisch aus dem Klausel-Store, kein LLM/Retrieval. `document` filtert per Substring auf den Dokumenttitel |
@@ -338,6 +337,10 @@ von „was behauptet die Gegenseite" (query auf dem Fall-Projekt).
   Timeouts bei CPU-Offload-Extraktion — mit Voll-GPU-qwen + `-n`-Output-Deckel
   obsolet. Wirkt nur auf **neu** indexierte Dokumente — für den Bestand
   `delete_project` + Re-Ingest.
+- **`INGEST_BATCH`** (default 5): Dokumente pro `ainsert`-Batch. `>1` lastet
+  LightRAGs Chunk-Parallelität (`MAX_ASYNC`) auch bei vielen kleinen Docs aus;
+  Pause/Stop greifen zwischen Batches (ein Batch wird immer ganz zu Ende geführt).
+  `=1` stellt das alte feingranulare Verhalten (Cancel/Fortschritt pro Doc) wieder her.
 - **`MAX_GLEANING`** (default 0, LightRAG-Default wäre 1): Gleaning ist LightRAGs
   „hast du was übersehen?"-Nachfassrunde pro Chunk — verdoppelt die LLM-Calls
   für wenige Zusatz-Entitäten. Auf der geteilten GPU halber Ingest-Durchsatz,

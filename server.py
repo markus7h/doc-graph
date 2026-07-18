@@ -79,6 +79,10 @@ LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "480"))
 # obsolet. Größere Chunks = halb so viele Extraktions-Calls (der ~3-4k-Token-
 # Prompt-Overhead fällt PRO Chunk an). Wirkt nur auf neu indexierte Docs.
 CHUNK_TOKEN_SIZE = int(os.environ.get("CHUNK_TOKEN_SIZE", "1200"))
+# Docs pro ainsert-Batch. >1 lastet LightRAGs Chunk-Parallelität (MAX_ASYNC) auch
+# bei vielen kleinen Docs aus; Pause/Stop greifen zwischen Batches. =1 stellt das
+# alte, feingranulare Verhalten (Cancel/Fortschritt pro Doc) wieder her.
+INGEST_BATCH = int(os.environ.get("INGEST_BATCH", "5"))
 # Sicherheits-Guard: Dokumente über dieser Textlänge (Zeichen) werden NICHT
 # ingestiert, sondern geflaggt (ingest_flagged.json) und dem Nutzer zur Prüfung
 # vorgelegt. Schützt vor Datenmüll wie einem 50-MB-CSV-Export, der zehntausende
@@ -111,17 +115,25 @@ async def _llm_model_func(prompt, system_prompt=None, history_messages=None, **k
 # Direkter OpenAI-kompatibler Embedding-Call statt lightrag.llm.openai.openai_embed:
 # dessen Decorator erzwingt embedding_dim=1536 (ada-002) und validiert hart dagegen —
 # unvereinbar mit bge-m3 (1024). Hier gilt allein EmbeddingFunc(embedding_dim=EMBED_DIM).
+# ponytail: ein wiederverwendeter Client statt pro Call ein neuer — spart TCP-/
+# Pool-Aufbau je Embedding-Batch (LightRAG ruft das sehr oft). Lazy, da beim
+# Import noch kein Event-Loop läuft.
+_embed_client: httpx.AsyncClient | None = None
+
+
 async def _embed_func(texts):
     # httpx-Timeout >= LightRAGs default_embedding_timeout, sonst schlägt der
     # Client zu, bevor LightRAG selbst tolerieren würde.
-    async with httpx.AsyncClient(timeout=EMBED_TIMEOUT) as client:
-        r = await client.post(
-            f"{EMBED_BASE_URL}/embeddings",
-            json={"model": EMBED_MODEL, "input": list(texts)},
-            headers={"Authorization": f"Bearer {LLM_API_KEY}"},
-        )
-        r.raise_for_status()
-        data = r.json()["data"]
+    global _embed_client
+    if _embed_client is None:
+        _embed_client = httpx.AsyncClient(timeout=EMBED_TIMEOUT)
+    r = await _embed_client.post(
+        f"{EMBED_BASE_URL}/embeddings",
+        json={"model": EMBED_MODEL, "input": list(texts)},
+        headers={"Authorization": f"Bearer {LLM_API_KEY}"},
+    )
+    r.raise_for_status()
+    data = r.json()["data"]
     return np.array([d["embedding"] for d in data], dtype=np.float32)
 
 PAPERLESS_URL = os.environ.get("PAPERLESS_URL", "").rstrip("/")
@@ -446,16 +458,6 @@ def _doc_status_counts(project: str) -> dict:
     return dict(Counter(v.get("status", "unknown") for v in data.values()))
 
 
-def _doc_state(project: str, doc_key: str) -> str:
-    """Echter LightRAG-Zustand EINES Dokuments (''=unbekannt). Guard nach
-    ainsert: nur 'processed' darf ins Manifest — ainsert kann zurückkehren,
-    ohne verarbeitet zu haben (geteilter Pipeline-Lock, Kill mittendrin)."""
-    p = PROJECTS_DIR / project / "kv_store_doc_status.json"
-    if not p.exists():
-        return ""
-    return json.loads(p.read_text()).get(doc_key, {}).get("status", "")
-
-
 def _hash(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
@@ -573,6 +575,190 @@ async def query(
     return str(result)
 
 
+# ----------------------------------------------------------------------------
+# Gemeinsamer Ingest-Kern (von ingest_paperless UND ingest_directory genutzt)
+# ----------------------------------------------------------------------------
+def _doc_states(project: str, keys: list[str]) -> dict[str, str]:
+    """Echte LightRAG-Zustände für mehrere doc_keys mit EINEM Datei-Read
+    (statt _doc_state pro Doc -> O(n²) über den Lauf)."""
+    p = PROJECTS_DIR / project / "kv_store_doc_status.json"
+    if not p.exists():
+        return {}
+    data = json.loads(p.read_text())
+    return {k: data.get(k, {}).get("status", "") for k in keys}
+
+
+def _prepare_doc(doc_key, text, clause_content, clause_title, is_regelwerk,
+                 clause_store, manifest, flagged, counts):
+    """Entscheidung für EIN Dokument (gemeinsam für beide Ingest-Pfade):
+    aktualisiert clause_store/flagged/counts in-place und liefert
+    (doc_key, text, hash) für die pending-Liste oder None (skip/flag)."""
+    h = _hash(text)
+    # Klausel-Store immer aktualisieren (auch unveränderte Docs) — heilt Projekte,
+    # die vor dem regelwerk-Feature ingestiert wurden.
+    if is_regelwerk:
+        entry = _clause_entry(clause_title, clause_content)
+        if entry:
+            clause_store[doc_key] = entry
+    if manifest.get(doc_key) == h:
+        counts["skipped"] += 1
+        return None
+    # Sicherheits-Guard übergroße Docs. Nutzer-Entscheidung hat Vorrang:
+    # 'approve' -> aufnehmen, 'ignore' -> still skippen, sonst flaggen & warten.
+    if len(text) > MAX_DOC_CHARS:
+        decision = flagged.get(doc_key, {}).get("decision", "open")
+        if decision == "ignore":
+            counts["skipped"] += 1
+            return None
+        if decision != "approve":
+            flagged[doc_key] = {
+                "title": clause_title or doc_key,
+                "chars": len(text),
+                "est_chunks": len(text) // max(1, CHUNK_TOKEN_SIZE * 4),
+                "reason": f"Text {len(text)} Zeichen > MAX_DOC_CHARS ({MAX_DOC_CHARS})",
+                "decision": "open",
+                "at": _now(),
+            }
+            counts["flagged_new"] += 1
+            return None
+        # approve: durchfallen, Flag NICHT poppen (bleibt 'approved' sichtbar)
+    else:
+        flagged.pop(doc_key, None)  # klein genug -> Flag weg
+    if doc_key in manifest:
+        counts["updated"] += 1
+    else:
+        counts["new"] += 1
+    # ponytail: Hash NICHT vorab ins Manifest — erst nach erfolgreichem Insert.
+    return (doc_key, text, h)
+
+
+async def _poll_ingest_msg(project_id: str, stop: asyncio.Event):
+    # LightRAGs Live-Meldung ("Chunk 5 of 26 extracted …") in den Status spiegeln,
+    # damit man Fortschritt auch INNERHALB eines Batches sieht.
+    # ponytail: kooperatives asyncio -> läuft nie echt parallel zum Insert, kein Lock.
+    while not stop.is_set():
+        try:
+            ps = await get_namespace_data("pipeline_status")
+            st = _ingest_status.get(project_id)
+            if st and st.get("state") == "running":
+                st["msg"] = str(ps.get("latest_message") or "")[:160]
+        except Exception:  # noqa: BLE001 — Status-Anzeige ist best effort
+            pass
+        await asyncio.sleep(3)
+
+
+async def _run_ingest(project_id: str, rag, pending: list, counts: dict, manifest: dict) -> None:
+    """Hintergrund-Insert für beide Ingest-Pfade: GPU-Swap, Pause/Stop, batchweises
+    ainsert + per-Batch Manifest-Guard. Batchgröße INGEST_BATCH (=1 -> pro Doc).
+    Pause/Stop greifen zwischen Batches; ein Batch wird immer ganz zu Ende geführt."""
+    total = len(pending)
+    done = 0
+    stop = asyncio.Event()
+    poller = asyncio.create_task(_poll_ingest_msg(project_id, stop))
+    # ponytail-Invariante: swapped == genau ein offenes _swap_begin. Jeder begin
+    # bekommt sein _swap_end (Pause/finally), sonst leckt der Refcount und die GPU
+    # bleibt bei qwen hängen.
+    swapped = False
+
+    def _final(state):  # Endstatus mit aktuellem Zähler (done wird live gelesen)
+        return {"state": state, "done": done, "total": total, "new": counts["new"],
+                "updated": counts["updated"], "skipped": counts["skipped"], "at": _now()}
+
+    try:
+        # Altlasten-Guard vor dem ersten ainsert: hängende übergroße Docs raus,
+        # sonst zieht LightRAG sie automatisch wieder in die Verarbeitung.
+        await _purge_stuck_oversized(project_id, rag)
+        # Swap im Hintergrund-Task (nicht im MCP-Handler) -> kein MCP-Timeout,
+        # während qwen lädt. Bei Swap-Fehler bricht der Ingest ab; finally swappt zurück.
+        await _swap_begin()
+        swapped = True
+        stopped = False
+        i = 0
+        while i < len(pending):
+            # Pause hält zwischen Batches und gibt die GPU frei (mistral zurück).
+            while _ingest_control.get(project_id) == "pause":
+                if swapped:
+                    await _swap_end()
+                    swapped = False
+                _ingest_status[project_id]["state"] = "paused"
+                await asyncio.sleep(1)
+            if _ingest_control.get(project_id) == "stop":
+                _ingest_status[project_id] = _final("stopped")
+                stopped = True
+                break
+            if not swapped:  # erster Lauf / Resume nach Pause: qwen laden
+                await _swap_begin()
+                swapped = True
+                _ingest_status[project_id]["state"] = "running"
+
+            batch = pending[i:i + INGEST_BATCH]
+            keys = [k for k, _t, _h in batch]
+            texts = [t for _k, t, _h in batch]
+            async with _insert_lock:
+                await rag.ainsert(texts, ids=keys)
+            # Guard: nur wirklich 'processed' Docs ins Manifest (ein Read je Batch).
+            states = _doc_states(project_id, keys)
+            wrote = False
+            for k, _t, h in batch:
+                if states.get(k) == "processed":
+                    manifest[k] = h
+                    wrote = True
+                else:
+                    log.warning("Doc %s nicht 'processed' nach ainsert — bleibt für Re-Ingest offen", k)
+            if wrote:
+                _save_manifest(project_id, manifest)
+            done += len(batch)
+            _ingest_status[project_id]["done"] = done  # in-place: Poller-Feld bleibt
+            i += len(batch)
+        if not stopped:
+            _ingest_status[project_id] = _final("done")
+    except Exception as e:  # noqa: BLE001 — Status festhalten, nicht crashen
+        log.exception("Ingest fehlgeschlagen für %s", project_id)
+        _ingest_status[project_id] = {
+            "state": "error", "error": str(e), "done": done, "total": total, "at": _now(),
+        }
+    finally:
+        stop.set()
+        poller.cancel()
+        if swapped:
+            await _swap_end()
+        _ingest_control.pop(project_id, None)
+
+
+def _start_ingest(project_id: str, rag, pending: list, counts: dict,
+                  manifest: dict, flagged: dict, tail_note: str = "") -> str:
+    """Gemeinsamer Abschluss beider Ingest-Tools: Flag-Hinweis, 'nichts zu tun' /
+    'läuft schon', sonst Hintergrund-Task starten und Startmeldung liefern."""
+    open_flags = sum(1 for v in flagged.values() if v.get("decision", "open") == "open")
+    flag_note = (
+        f" ⚠ {open_flags} übergroße(s) Dokument(e) warten auf Entscheidung — "
+        f"im Viewer (Port {VIEWER_PORT}) aufnehmen/ignorieren." if open_flags else ""
+    )
+    if not pending:
+        return (
+            f"Projekt '{project_id}': nichts zu tun ({counts['skipped']} unverändert)."
+            f"{tail_note} Gesamt im Index: {len(manifest)} Dokumente.{flag_note}"
+        )
+    if _ingest_status.get(project_id, {}).get("state") == "running":
+        return (
+            f"Projekt '{project_id}': Ingest läuft bereits. "
+            f'Fortschritt: ingest_status(project_id="{project_id}").'
+        )
+    total = len(pending)
+    _ingest_control.pop(project_id, None)  # evtl. altes pause/stop verwerfen
+    task = asyncio.create_task(_run_ingest(project_id, rag, pending, counts, manifest))
+    _ingest_status[project_id] = {
+        "state": "running", "done": 0, "total": total, "new": counts["new"],
+        "updated": counts["updated"], "skipped": counts["skipped"], "at": _now(), "_task": task,
+    }
+    return (
+        f"Projekt '{project_id}': Ingest von {total} Dokumenten "
+        f"({counts['new']} neu, {counts['updated']} aktualisiert, {counts['skipped']} übersprungen) "
+        f"im Hintergrund gestartet — Extraktion läuft, das dauert.{tail_note} "
+        f'Fortschritt: ingest_status(project_id="{project_id}").{flag_note}'
+    )
+
+
 @mcp.tool()
 async def ingest_paperless(
     project_id: str,
@@ -619,7 +805,8 @@ async def ingest_paperless(
     manifest = _load_manifest(project_id)
     flagged = _load_flagged(project_id)
 
-    new, updated, skipped, flagged_new, pending = 0, 0, 0, 0, []  # pending: (doc_key, text, hash)
+    counts = {"new": 0, "updated": 0, "skipped": 0, "flagged_new": 0}
+    pending = []
 
     async with _paperless_client() as client:
         # Korrespondenten-/Tag-/Dokumenttyp-Namen einmal auflösen (IDs -> Namen)
@@ -641,194 +828,17 @@ async def ingest_paperless(
                 tag_names=tag_names,
                 doctype_name=doctype_map.get(doc.get("document_type")),
             )
-            h = _hash(text)
-            # Klausel-Store immer aktualisieren (auch für unveränderte Docs) —
-            # heilt Projekte, die vor dem regelwerk-Feature ingestiert wurden.
-            if is_regelwerk:
-                entry = _clause_entry(doc.get("title") or doc_key, doc.get("content") or "")
-                if entry:
-                    clause_store[doc_key] = entry
-            if manifest.get(doc_key) == h:
-                skipped += 1
-                continue
-            # Sicherheits-Guard: übergroße Dokumente. Entscheidung des Nutzers
-            # (flagged_decide) hat Vorrang: 'approve' -> trotz Größe aufnehmen,
-            # 'ignore' -> still überspringen, 'open'/neu -> flaggen und warten.
-            if len(text) > MAX_DOC_CHARS:
-                decision = flagged.get(doc_key, {}).get("decision", "open")
-                if decision == "ignore":
-                    skipped += 1
-                    continue
-                if decision != "approve":
-                    flagged[doc_key] = {
-                        "title": doc.get("title") or doc_key,
-                        "chars": len(text),
-                        "est_chunks": len(text) // max(1, CHUNK_TOKEN_SIZE * 4),
-                        "reason": f"Text {len(text)} Zeichen > MAX_DOC_CHARS ({MAX_DOC_CHARS})",
-                        "decision": "open",
-                        "at": _now(),
-                    }
-                    flagged_new += 1
-                    continue
-                # approve: durchfallen zur Aufnahme, Flag NICHT poppen (bleibt als
-                # 'approved' sichtbar, bis das Doc via Manifest als erledigt gilt)
-            else:
-                flagged.pop(doc_key, None)  # klein genug -> Flag weg
-            if doc_key in manifest:
-                updated += 1
-            else:
-                new += 1
-            # ponytail: Hash NICHT vorab ins Manifest — erst nach erfolgreichem
-            # Insert im Hintergrund, damit ein Abbruch das Dokument nicht "erledigt".
-            pending.append((doc_key, text, h))
+            item = _prepare_doc(doc_key, text, doc.get("content") or "",
+                                doc.get("title") or doc_key, is_regelwerk,
+                                clause_store, manifest, flagged, counts)
+            if item:
+                pending.append(item)
 
     _save_flagged(project_id, flagged)
     if is_regelwerk and clause_store:
         _save_clauses(project_id, clause_store)
 
-    _open_flags = sum(1 for v in flagged.values() if v.get("decision", "open") == "open")
-    flag_note = (
-        f" ⚠ {_open_flags} übergroße(s) Dokument(e) warten auf Entscheidung — "
-        f"im Viewer (Port {VIEWER_PORT}) aufnehmen/ignorieren." if _open_flags else ""
-    )
-
-    if not pending:
-        return (
-            f"Projekt '{project_id}': nichts zu tun ({skipped} unverändert). "
-            f"Gesamt im Index: {len(manifest)} Dokumente.{flag_note}"
-        )
-
-    if _ingest_status.get(project_id, {}).get("state") == "running":
-        return (
-            f"Projekt '{project_id}': Ingest läuft bereits. "
-            f'Fortschritt: ingest_status(project_id="{project_id}").'
-        )
-
-    total = len(pending)
-
-    # Extraktion ist der teure Teil (viele LLM-Calls, ggf. Stunden). Im
-    # Hintergrund + Dokument für Dokument, damit man echten Fortschritt (done/total)
-    # sieht und ein Abbruch nur das laufende Dokument kostet (Manifest je Doc gespeichert).
-    async def _poll_msg(stop: asyncio.Event):
-        # Liest LightRAGs Live-Meldung (z.B. "Chunk 5 of 26 extracted ...") in den
-        # Status, damit man Fortschritt auch INNERHALB eines langen Dokuments sieht.
-        # ponytail: kooperatives asyncio -> läuft nie echt parallel zum Insert, kein Lock.
-        while not stop.is_set():
-            try:
-                ps = await get_namespace_data("pipeline_status")
-                st = _ingest_status.get(project_id)
-                if st and st.get("state") == "running":
-                    st["msg"] = str(ps.get("latest_message") or "")[:160]
-            except Exception:  # noqa: BLE001 — Status-Anzeige ist best effort
-                pass
-            await asyncio.sleep(3)
-
-    async def _run():
-        done = 0
-        # Altlasten-Guard vor dem ersten ainsert: hängende übergroße Docs raus,
-        # sonst zieht LightRAG sie automatisch wieder in die Verarbeitung.
-        await _purge_stuck_oversized(project_id, rag)
-        stop = asyncio.Event()
-        poller = asyncio.create_task(_poll_msg(stop))
-        # ponytail-Invariante: swapped == "ein _swap_begin ohne passendes _swap_end
-        # offen". Jeder begin bekommt genau ein end (finally oder Pause), sonst
-        # leckt der Refcount und die GPU bleibt bei qwen hängen.
-        swapped = False
-        try:
-            # Swap läuft im Hintergrund-Task (nicht im MCP-Handler) -> kein
-            # MCP-Timeout, während qwen lädt. Bei Swap-Fehler bricht der Ingest
-            # kontrolliert ab; das finally swappt zurück.
-            await _swap_begin()
-            swapped = True
-            def _final(state):  # Endstatus mit aktuellem Zähler (done wird live gelesen)
-                return {"state": state, "done": done, "total": total, "new": new,
-                        "updated": updated, "skipped": skipped, "at": _now()}
-
-            stopped = False
-            i = 0
-            while i < len(pending):
-                doc_key, text, h = pending[i]
-                # Pause hält hier; ein mittendrin gecanceltes Doc wird nach dem
-                # Fortsetzen KOMPLETT neu verarbeitet (nicht als fertig gezählt).
-                while _ingest_control.get(project_id) == "pause":
-                    if swapped:  # GPU freigeben: mistral zurück für paperless-ai
-                        await _swap_end()
-                        swapped = False
-                    _ingest_status[project_id]["state"] = "paused"
-                    await asyncio.sleep(1)
-                if _ingest_control.get(project_id) == "stop":
-                    _ingest_status[project_id] = _final("stopped")
-                    stopped = True
-                    break
-                if not swapped:  # erster Lauf / Resume nach Pause: qwen laden
-                    await _swap_begin()
-                    swapped = True
-                    _ingest_status[project_id]["state"] = "running"
-                # Insert als eigener Task, damit Stop/Pause ihn SOFORT (mitten im
-                # Dokument) canceln. Stop: akzeptierter Teil-Schreibvorgang.
-                # Pause: dasselbe Doc wird nach Resume neu inserted (ids=[doc_key]
-                # idempotent, überschreibt den Teilstand).
-                # ponytail: hartes cancel() eines ainsert — hinterlässt evtl.
-                # LightRAG-internen Teilzustand; Ceiling: hängt ein Folge-Insert,
-                # bräuchte es einen pipeline_status-Reset nach Cancel.
-                interrupted = None
-                async with _insert_lock:
-                    ins = asyncio.create_task(rag.ainsert([text], ids=[doc_key]))
-                    while True:
-                        finished, _ = await asyncio.wait({ins}, timeout=0.3)
-                        if ins in finished:
-                            ins.result()  # reguläres Ende / Fehler weiterreichen
-                            break
-                        if _ingest_control.get(project_id) in ("stop", "pause"):
-                            interrupted = _ingest_control.get(project_id)
-                            ins.cancel()
-                            try:
-                                await ins
-                            except asyncio.CancelledError:
-                                pass
-                            break
-                if interrupted == "pause":
-                    continue  # Doc nicht zählen -> nach Resume neu verarbeiten
-                if interrupted == "stop":
-                    _ingest_status[project_id] = _final("stopped")
-                    stopped = True
-                    break
-                # Guard: Hash nur ins Manifest, wenn LightRAG das Doc wirklich
-                # verarbeitet hat — sonst holt der nächste Ingest es nach.
-                if _doc_state(project_id, doc_key) == "processed":
-                    manifest[doc_key] = h
-                    _save_manifest(project_id, manifest)
-                else:
-                    log.warning("Doc %s nicht 'processed' nach ainsert — bleibt für Re-Ingest offen", doc_key)
-                done += 1
-                _ingest_status[project_id]["done"] = done  # in-place: Poller-Feld bleibt
-                i += 1
-            if not stopped:
-                _ingest_status[project_id] = _final("done")
-        except Exception as e:  # noqa: BLE001 — Status festhalten, nicht crashen
-            log.exception("Ingest fehlgeschlagen für %s", project_id)
-            _ingest_status[project_id] = {
-                "state": "error", "error": str(e), "done": done, "total": total, "at": _now(),
-            }
-        finally:
-            stop.set()
-            poller.cancel()
-            if swapped:
-                await _swap_end()
-            _ingest_control.pop(project_id, None)
-
-    _ingest_control.pop(project_id, None)  # evtl. altes pause/stop verwerfen
-    task = asyncio.create_task(_run())
-    _ingest_status[project_id] = {
-        "state": "running", "done": 0, "total": total, "new": new,
-        "updated": updated, "skipped": skipped, "at": _now(), "_task": task,
-    }
-    return (
-        f"Projekt '{project_id}': Ingest von {total} Dokumenten "
-        f"({new} neu, {updated} aktualisiert, {skipped} übersprungen) "
-        f"im Hintergrund gestartet — Extraktion läuft, das dauert. "
-        f'Fortschritt: ingest_status(project_id="{project_id}").{flag_note}'
-    )
+    return _start_ingest(project_id, rag, pending, counts, manifest, flagged)
 
 
 @mcp.tool()
@@ -855,7 +865,7 @@ async def ingest_status(project_id: str) -> str:
 async def ingest_control(project_id: str, action: str) -> str:
     """Steuert einen laufenden ingest_paperless-Lauf.
 
-    'pause' hält nach dem aktuellen Dokument an und gibt die GPU frei (mistral
+    'pause' hält nach dem aktuellen Batch an und gibt die GPU frei (mistral
     zurück für paperless-ai). 'resume' lädt qwen neu und macht weiter. 'stop'
     bricht ab — bereits Indexiertes bleibt im Graph.
 
@@ -873,7 +883,7 @@ async def ingest_control(project_id: str, action: str) -> str:
         _ingest_control.pop(project_id, None)
     else:
         _ingest_control[project_id] = action
-    return f"Projekt '{project_id}': '{action}' vorgemerkt — greift nach dem aktuellen Dokument."
+    return f"Projekt '{project_id}': '{action}' vorgemerkt — greift nach dem aktuellen Batch."
 
 
 def _extract_text(f: Path) -> str | None:
@@ -898,7 +908,8 @@ def _extract_text(f: Path) -> str | None:
 async def ingest_directory(project_id: str, subpath: str = "", regelwerk: bool = False) -> str:
     """Indexiert lokale Dateien (.txt, .md, .pdf) aus /data/inputs/<subpath>
     in den Knowledge Graph. PDFs werden per pdftotext extrahiert (kein OCR —
-    für gescannte Bilder Paperless als Quelle nutzen).
+    für gescannte Bilder Paperless als Quelle nutzen). Läuft im Hintergrund
+    (steuerbar via ingest_control/ingest_status) und kehrt sofort zurück.
 
     Args:
         project_id: technischer Projekt-Schlüssel.
@@ -923,7 +934,9 @@ async def ingest_directory(project_id: str, subpath: str = "", regelwerk: bool =
 
     rag = await get_rag(project_id)
     manifest = _load_manifest(project_id)
-    new, skipped, unsupported, texts, ids = 0, 0, 0, [], []
+    flagged = _load_flagged(project_id)
+    counts = {"new": 0, "updated": 0, "skipped": 0, "flagged_new": 0}
+    pending, unsupported = [], 0
 
     for f in sorted(base.rglob("*")):
         if not f.is_file():
@@ -934,44 +947,19 @@ async def ingest_directory(project_id: str, subpath: str = "", regelwerk: bool =
             continue
         text = f"Dokument: {f.name}\n\n" + content
         doc_key = f"file:{f.relative_to(INPUTS_DIR)}"
-        h = _hash(text)
-        # Klausel-Store immer aktualisieren (auch unverändert) — heilt Alt-Ingests.
-        if is_regelwerk:
-            entry = _clause_entry(f.name, content)
-            if entry:
-                clause_store[doc_key] = entry
-        if manifest.get(doc_key) == h:
-            skipped += 1
-            continue
-        manifest[doc_key] = h
-        texts.append(text)
-        ids.append(doc_key)
-        new += 1
+        item = _prepare_doc(doc_key, text, content, f.name, is_regelwerk,
+                            clause_store, manifest, flagged, counts)
+        if item:
+            pending.append(item)
 
+    _save_flagged(project_id, flagged)
     if is_regelwerk and clause_store:
         _save_clauses(project_id, clause_store)
 
-    if texts:
-        # ponytail: synchron -> der MCP-Call blockt, während qwen lädt (~min).
-        # ingest_directory ist Nebenpfad (primär Paperless); falls störend, wie
-        # ingest_paperless in einen Hintergrund-Task ziehen.
-        await _swap_begin()
-        try:
-            async with _insert_lock:
-                await rag.ainsert(texts, ids=ids)
-            # Guard wie bei ingest_paperless: nur wirklich Verarbeitetes ins Manifest.
-            for doc_key in ids:
-                if _doc_state(project_id, doc_key) != "processed":
-                    manifest.pop(doc_key, None)
-                    log.warning("Doc %s nicht 'processed' nach ainsert — bleibt für Re-Ingest offen", doc_key)
-            _save_manifest(project_id, manifest)
-        finally:
-            await _swap_end()
-
-    return (
-        f"Projekt '{project_id}': {new} Dateien indexiert, {skipped} unverändert, "
-        f"{unsupported} ignoriert (nur .txt/.md/.pdf unterstützt)."
-    )
+    # Läuft jetzt (wie ingest_paperless) im Hintergrund + steuerbar via
+    # ingest_control/ingest_status — kehrt sofort zurück.
+    tail = f" {unsupported} ignoriert (nur .txt/.md/.pdf)." if unsupported else ""
+    return _start_ingest(project_id, rag, pending, counts, manifest, flagged, tail_note=tail)
 
 
 @mcp.tool()
