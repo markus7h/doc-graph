@@ -31,6 +31,40 @@ def _esc(s: str) -> str:
             .replace(">", "&gt;").replace('"', "&quot;"))
 
 
+def _svg(paths: str, solid: bool = False) -> str:
+    """Inline-SVG-Icon (16er-Viewport, currentColor) — rendert überall zuverlässig,
+    anders als Emoji-Glyphen (die je nach Font fehlen, z.B. Pause/Stop)."""
+    attr = ('fill="currentColor"' if solid else
+            'fill="none" stroke="currentColor" stroke-width="1.5" '
+            'stroke-linecap="round" stroke-linejoin="round"')
+    return (f'<svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" '
+            f'{attr}>{paths}</svg>')
+
+
+# Icons für die Karten-Schaltflächen (Icon-only, Text kommt als CSS-Tooltip).
+_ICON = {
+    "refresh": _svg('<path d="M13 8a5 5 0 1 1-1.46-3.54"/><path d="M13 2.8v2.4h-2.4"/>'),
+    "create": _svg('<path d="M8 3.3v9.4M3.3 8h9.4"/>'),
+    "rename": _svg('<path d="M3.2 12.8l.85-2.7 6.4-6.4 1.85 1.85-6.4 6.4z"/>'
+                   '<path d="M9.6 4.1l1.85 1.85"/>'),
+    "delete": _svg('<path d="M3.2 4.6h9.6M6.4 4.6V3.2h3.2v1.4M4.7 4.6l.5 8.2h5.6l.5-8.2"/>'),
+    "pause": _svg('<rect x="4.4" y="3" width="2.5" height="10" rx=".4"/>'
+                  '<rect x="9.1" y="3" width="2.5" height="10" rx=".4"/>', solid=True),
+    "resume": _svg('<path d="M5 3.4l7.2 4.6L5 12.6z"/>', solid=True),
+    "stop": _svg('<rect x="3.9" y="3.9" width="8.2" height="8.2" rx="1.1"/>', solid=True),
+    "save": _svg('<path d="M8 2.7v6.6M5.3 6.6 8 9.3l2.7-2.7"/><path d="M3.4 12.6h9.2"/>'),
+    "restore": _svg('<path d="M4.3 6.1H2.7V4.5"/>'
+                    '<path d="M3 6A5.2 5.2 0 1 1 3.4 10.2"/>'),
+}
+
+
+def _icon_btn(icon: str, tip: str, submit: bool = True) -> str:
+    """Icon-only-Button: SVG + Tooltip (data-tip, per CSS nach ~1,8 s) + aria-label."""
+    typ = ' type="submit"' if submit else ""
+    return (f'<button{typ} class="ib" data-tip="{_esc(tip)}" aria-label="{_esc(tip)}">'
+            f'{_ICON[icon]}</button>')
+
+
 def node_dict(n, d: dict) -> dict:
     """GraphML-Knoten -> Viewer-Dict (id/label/group/color/desc)."""
     etype = d.get("entity_type", "")
@@ -191,7 +225,7 @@ def _card_backup(e: str, backups: list[dict]) -> str:
     vorhanden) Auswahl der letzten 5 Stände + 'Wiederherstellen'."""
     save = (f'<form method="post" action="/backup/now" class="del" style="margin:0">'
             f'<input type="hidden" name="project_id" value="{e}">'
-            f'<button type="submit" title="Dieses Projekt sichern (nur bei Änderung)"><span class="ico">💾</span>Sichern</button></form>')
+            f'{_icon_btn("save", "Dieses Projekt sichern (nur bei Änderung)")}</form>')
     if not backups:
         return save
     opts = "".join(f'<option value="{_esc(b["name"])}">{_esc(_backup_time(b["name"]))} '
@@ -201,7 +235,7 @@ def _card_backup(e: str, backups: list[dict]) -> str:
                f'Der jetzige Stand geht verloren.\')">'
                f'<input type="hidden" name="project_id" value="{e}">'
                f'<select name="name" style="font:inherit;font-size:12px;border:none;background:none;color:var(--muted);max-width:170px">{opts}</select>'
-               f'<button type="submit" title="Gewählten Stand zurückspielen"><span class="ico">↩</span>Wiederherstellen</button></form>')
+               f'{_icon_btn("restore", "Gewählten Stand zurückspielen")}</form>')
     return save + restore
 
 
@@ -303,14 +337,13 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
     # Auto-Refresh auch bei 'paused', damit Fortsetzen/Fortschritt sichtbar wird.
     running = any(s.get("state") in ("running", "paused") for s in status.values())
 
-    _CTL_ICON = {"pause": "⏸", "resume": "▶", "stop": "■"}
+    _CTL_ICON = {"pause": "pause", "resume": "resume", "stop": "stop"}
 
     def _ctl_form(e: str, action: str, label: str) -> str:
-        icon = _CTL_ICON.get(action, "")
         return (f'<form method="post" action="/ingest/control" class="del" style="margin-right:6px">'
                 f'<input type="hidden" name="project_id" value="{e}">'
                 f'<input type="hidden" name="action" value="{action}">'
-                f'<button title="Ingest {label.lower()}"><span class="ico">{icon}</span>{label}</button></form>')
+                f'{_icon_btn(_CTL_ICON[action], f"Ingest {label.lower()}")}</form>')
 
     def _row(p: str, has: bool) -> str:
         e = _esc(p)
@@ -341,18 +374,18 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
         # Buttons: Erstellen/Aktualisieren (POST /refresh) + Umbenennen + Löschen
         refresh_form = (f'<form method="post" action="/refresh" class="del" style="margin-right:6px">'
                        f'<input type="hidden" name="project_id" value="{e}">'
-                       f'<button title="{"Graph aktualisieren" if has else "Graph erstellen"}"><span class="ico">{"↻" if has else "＋"}</span>{"Aktualisieren" if has else "Erstellen"}</button></form>')
+                       f'{_icon_btn("refresh" if has else "create", "Graph aktualisieren" if has else "Graph erstellen")}</form>')
         rename_form = (f'<form method="post" action="/rename" class="del" style="margin-right:6px" '
                       f'onsubmit="const n=prompt(\'Neuer Anzeigename für &quot;{e}&quot;:\', \'{_esc(display_name)}\'); '
                       f'if(n===null) return false; document.querySelector(\'input[name=project_name]\').value=n; return true;">'
                       f'<input type="hidden" name="project_id" value="{e}">'
                       f'<input type="hidden" name="project_name" value="">'
-                      '<button type="submit" title="Anzeigenamen ändern"><span class="ico">✎</span>Umbenennen</button></form>')
-        delete_form = (f'<form method="post" action="/delete" class="del" '
+                      f'{_icon_btn("rename", "Anzeigenamen ändern")}</form>')
+        delete_form = (f'<form method="post" action="/delete" class="del danger" '
                       f"onsubmit=\"return confirm('Projekt &quot;{e}&quot; löschen? "
                       "Der Index wird entfernt, die Quelldokumente bleiben.')\">"
                       f'<input type="hidden" name="project_id" value="{e}">'
-                      '<button title="Projekt-Index löschen"><span class="ico">🗑</span>Löschen</button></form>')
+                      f'{_icon_btn("delete", "Projekt-Index löschen")}</form>')
         # Pause/Fortsetzen + Stop nur, solange ein Ingest läuft oder pausiert ist.
         if state == "running":
             control_forms = _ctl_form(e, "pause", "Pause") + _ctl_form(e, "stop", "Stop")
@@ -403,7 +436,19 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
     border-top:1px solid var(--border)}}
   .prog .bar{{width:100%;height:7px;background:var(--bg);border:1px solid var(--border);
     border-radius:20px;overflow:hidden}}
-  .ico{{margin-right:5px;font-size:11px}}
+  /* Icon-only-Schaltflächen: quadratisch, SVG zentriert. */
+  .del button.ib,.dec button.ib{{position:relative;width:32px;height:30px;padding:0;
+    display:inline-flex;align-items:center;justify-content:center;overflow:visible}}
+  .ib svg{{display:block;pointer-events:none}}
+  /* Tooltip: erscheint per CSS erst nach ~1,8 s Hover (transition-delay), nicht der native title. */
+  .ib::after{{content:attr(data-tip);position:absolute;top:calc(100% + 7px);left:50%;
+    transform:translateX(-50%);background:#333;color:#fff;font-size:11px;font-weight:500;
+    line-height:1.1;white-space:nowrap;padding:5px 8px;border-radius:5px;
+    box-shadow:0 2px 8px rgba(0,0,0,.18);opacity:0;pointer-events:none;transition:opacity .12s ease;z-index:30}}
+  .ib:hover::after{{opacity:1;transition-delay:1.8s}}
+  /* Icon-Buttons hovern grün (Aktion), nur Löschen bleibt rot (destruktiv). */
+  .del button.ib:hover{{border-color:var(--accent);color:var(--accent);background:#edf7ee}}
+  .del.danger button.ib:hover{{border-color:#dd3333;color:#dd3333;background:#fff5f5}}
   .prog .fill{{height:100%;background:var(--accent);border-radius:20px;transition:width .4s ease}}
   .prog .fill.paused{{background:#ffb300}}
   .left{{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;min-width:0}}

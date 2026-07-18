@@ -117,6 +117,23 @@ def test_index_graph_counts():
     assert "2.500 Entitäten" in html and "4.200 Kanten" in html
 
 
+def test_icon_buttons_icononly():
+    # Karten-Buttons sind Icon-only (SVG), Text steckt im Tooltip (data-tip),
+    # nicht als sichtbarer Button-Text. Kein Emoji-Glyph mehr.
+    html = index_html([("fehmarn", True)])
+    assert '<svg viewBox="0 0 16 16"' in html, "keine Inline-SVG-Icons"
+    assert 'class="ib" data-tip="Anzeigenamen ändern"' in html
+    assert 'data-tip="Projekt-Index löschen"' in html
+    # sichtbarer Text darf nicht mehr im Button stehen
+    assert ">Umbenennen<" not in html and ">Löschen<" not in html
+    # keine Emoji-Icons mehr (die je nach Font fehlten)
+    for glyph in ("🗑", "✎", "↻", "＋", "⏸", "■", "▶", "💾", "↩"):
+        assert glyph not in html, f"Emoji {glyph} noch vorhanden"
+    # Pause/Stop-Icons erscheinen bei laufendem Ingest
+    running = index_html([("fehmarn", True)], {"fehmarn": {"state": "running", "done": 1, "total": 5}})
+    assert 'data-tip="Ingest pause"' in running and 'data-tip="Ingest stop"' in running
+
+
 if __name__ == "__main__":
     test_graph_shell_fetches_live()
     test_node_dict()
@@ -126,4 +143,5 @@ if __name__ == "__main__":
     test_index_html()
     test_index_status()
     test_index_graph_counts()
+    test_icon_buttons_icononly()
     print("ok")

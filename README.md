@@ -147,7 +147,9 @@ Dokumente werden einzeln extrahiert (Zähler pro fertigem Dokument); zusätzlich
 Badge LightRAGs aktuelle Live-Meldung (z.B. „Chunk 5 of 26 extracted …"), sodass man
 den Fortschritt auch innerhalb eines langen Dokuments sieht. Bei laufendem oder
 pausiertem Import lädt die Seite sich alle 5 s selbst neu, ohne dass man ein MCP-Tool
-aufrufen muss. Jede Karte hat folgende Buttons:
+aufrufen muss. Jede Karte hat folgende Buttons (**Icon-only** mit Inline-SVG —
+rendern zuverlässig unabhängig vom Emoji-Font; die Beschriftung erscheint als
+Tooltip erst nach kurzem Verweilen mit der Maus, Löschen hovert rot, der Rest grün):
 
 - **Pause / Fortsetzen / Stop** (nur bei laufendem/pausiertem Ingest): steuert den
   Import kooperativ **zwischen zwei Dokumenten** (POST `/ingest/control`) — serverseitig
