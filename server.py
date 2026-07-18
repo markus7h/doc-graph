@@ -37,6 +37,12 @@ from graphview import (
 
 import numpy as np
 
+# Gleaning (LightRAGs "hast du was übersehen?"-Nachfassrunde) aus: verdoppelt
+# sonst die LLM-Calls pro Chunk für wenige Zusatz-Entitäten — auf der geteilten
+# GPU der halbe Ingest-Durchsatz. MUSS vor dem lightrag-Import stehen (die
+# Dataclass liest MAX_GLEANING beim Import). Via Compose-env überschreibbar.
+os.environ.setdefault("MAX_GLEANING", "0")
+
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import openai_complete_if_cache
 from lightrag.utils import EmbeddingFunc
@@ -67,10 +73,12 @@ EMBED_TIMEOUT = int(os.environ.get("EMBED_TIMEOUT", "180"))
 # (niedriger t/s) reißen dichte Chunks den Default -> hier hochsetzen. Der
 # eigentliche Engpass bleibt der Throughput (GPU), das ist nur der Deckel.
 LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "480"))
-# Chunk-Größe (Tokens). 600 statt LightRAG-Default 1200: weniger Entitäten pro
-# Chunk -> kürzere Extraktion, beseitigt den 480s-Worker-Timeout bei dichten
-# Tabellen-/Listen-Docs (siehe INGEST-FAILURE-ANALYSE.md).
-CHUNK_TOKEN_SIZE = int(os.environ.get("CHUNK_TOKEN_SIZE", "600"))
+# Chunk-Größe (Tokens). Wieder LightRAG-Default 1200: der frühere 600er-Wert
+# war ein Workaround gegen 480s-Worker-Timeouts bei CPU-Offload-Extraktion
+# (siehe INGEST-FAILURE-ANALYSE.md) — mit Voll-GPU-qwen + Output-Deckel (-n)
+# obsolet. Größere Chunks = halb so viele Extraktions-Calls (der ~3-4k-Token-
+# Prompt-Overhead fällt PRO Chunk an). Wirkt nur auf neu indexierte Docs.
+CHUNK_TOKEN_SIZE = int(os.environ.get("CHUNK_TOKEN_SIZE", "1200"))
 # Sicherheits-Guard: Dokumente über dieser Textlänge (Zeichen) werden NICHT
 # ingestiert, sondern geflaggt (ingest_flagged.json) und dem Nutzer zur Prüfung
 # vorgelegt. Schützt vor Datenmüll wie einem 50-MB-CSV-Export, der zehntausende

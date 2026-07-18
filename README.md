@@ -332,10 +332,17 @@ von „was behauptet die Gegenseite" (query auf dem Fall-Projekt).
   `model_check_report.md` (`EMPFEHLUNG: bleiben` / `EMPFEHLUNG: wechseln zu <tag>`).
 - **EMBED_DIM darf sich nachträglich nicht ändern** — Embedding-Modell pro
   Projekt festnageln, sonst Index neu aufbauen.
-- **`CHUNK_TOKEN_SIZE`** (default 600, war LightRAG-Default 1200): kleinere Chunks
-  = weniger Entitäten pro Extraktions-Call, verhindert den 480s-Worker-Timeout bei
-  dichten Tabellen-Docs. Wirkt nur auf **neu** indexierte Dokumente — für den
-  Bestand `delete_project` + Re-Ingest.
+- **`CHUNK_TOKEN_SIZE`** (default 1200 = LightRAG-Default): größere Chunks =
+  halb so viele Extraktions-Calls (der ~3–4k-Token-Prompt-Overhead fällt pro
+  Chunk an). Der frühere 600er-Default war ein Workaround gegen 480s-Worker-
+  Timeouts bei CPU-Offload-Extraktion — mit Voll-GPU-qwen + `-n`-Output-Deckel
+  obsolet. Wirkt nur auf **neu** indexierte Dokumente — für den Bestand
+  `delete_project` + Re-Ingest.
+- **`MAX_GLEANING`** (default 0, LightRAG-Default wäre 1): Gleaning ist LightRAGs
+  „hast du was übersehen?"-Nachfassrunde pro Chunk — verdoppelt die LLM-Calls
+  für wenige Zusatz-Entitäten. Auf der geteilten GPU halber Ingest-Durchsatz,
+  deshalb per Default aus (gesetzt in `server.py` vor dem lightrag-Import,
+  via Compose-`environment` überschreibbar).
 - **`QUERY_MAX_TOKENS`** (default 12000): globaler Default für das Kontext-Budget je
   Query; pro Abfrage via `max_total_tokens` überschreibbar.
 - **`LLM_TIMEOUT`** (default 480 s): Timeout je einzelnem LLM-Call. Bei CPU-Offload/
