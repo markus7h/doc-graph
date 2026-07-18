@@ -732,9 +732,16 @@ async def ingest_paperless(
             # kontrolliert ab; das finally swappt zurück.
             await _swap_begin()
             swapped = True
-            for doc_key, text, h in pending:
-                # Pause/Stop kooperativ ZWISCHEN zwei Dokumenten — das laufende
-                # Doc wird fertig, Manifest ist je Doc gesichert (kein Datenverlust).
+            def _final(state):  # Endstatus mit aktuellem Zähler (done wird live gelesen)
+                return {"state": state, "done": done, "total": total, "new": new,
+                        "updated": updated, "skipped": skipped, "at": _now()}
+
+            stopped = False
+            i = 0
+            while i < len(pending):
+                doc_key, text, h = pending[i]
+                # Pause hält hier; ein mittendrin gecanceltes Doc wird nach dem
+                # Fortsetzen KOMPLETT neu verarbeitet (nicht als fertig gezählt).
                 while _ingest_control.get(project_id) == "pause":
                     if swapped:  # GPU freigeben: mistral zurück für paperless-ai
                         await _swap_end()
@@ -742,17 +749,42 @@ async def ingest_paperless(
                     _ingest_status[project_id]["state"] = "paused"
                     await asyncio.sleep(1)
                 if _ingest_control.get(project_id) == "stop":
-                    _ingest_status[project_id] = {
-                        "state": "stopped", "done": done, "total": total, "new": new,
-                        "updated": updated, "skipped": skipped, "at": _now(),
-                    }
+                    _ingest_status[project_id] = _final("stopped")
+                    stopped = True
                     break
-                if not swapped:  # Resume nach Pause: qwen wieder laden
+                if not swapped:  # erster Lauf / Resume nach Pause: qwen laden
                     await _swap_begin()
                     swapped = True
                     _ingest_status[project_id]["state"] = "running"
+                # Insert als eigener Task, damit Stop/Pause ihn SOFORT (mitten im
+                # Dokument) canceln. Stop: akzeptierter Teil-Schreibvorgang.
+                # Pause: dasselbe Doc wird nach Resume neu inserted (ids=[doc_key]
+                # idempotent, überschreibt den Teilstand).
+                # ponytail: hartes cancel() eines ainsert — hinterlässt evtl.
+                # LightRAG-internen Teilzustand; Ceiling: hängt ein Folge-Insert,
+                # bräuchte es einen pipeline_status-Reset nach Cancel.
+                interrupted = None
                 async with _insert_lock:
-                    await rag.ainsert([text], ids=[doc_key])
+                    ins = asyncio.create_task(rag.ainsert([text], ids=[doc_key]))
+                    while True:
+                        finished, _ = await asyncio.wait({ins}, timeout=0.3)
+                        if ins in finished:
+                            ins.result()  # reguläres Ende / Fehler weiterreichen
+                            break
+                        if _ingest_control.get(project_id) in ("stop", "pause"):
+                            interrupted = _ingest_control.get(project_id)
+                            ins.cancel()
+                            try:
+                                await ins
+                            except asyncio.CancelledError:
+                                pass
+                            break
+                if interrupted == "pause":
+                    continue  # Doc nicht zählen -> nach Resume neu verarbeiten
+                if interrupted == "stop":
+                    _ingest_status[project_id] = _final("stopped")
+                    stopped = True
+                    break
                 # Guard: Hash nur ins Manifest, wenn LightRAG das Doc wirklich
                 # verarbeitet hat — sonst holt der nächste Ingest es nach.
                 if _doc_state(project_id, doc_key) == "processed":
@@ -762,12 +794,9 @@ async def ingest_paperless(
                     log.warning("Doc %s nicht 'processed' nach ainsert — bleibt für Re-Ingest offen", doc_key)
                 done += 1
                 _ingest_status[project_id]["done"] = done  # in-place: Poller-Feld bleibt
-            else:
-                # for..else: nur wenn NICHT via break gestoppt -> regulär fertig.
-                _ingest_status[project_id] = {
-                    "state": "done", "done": done, "total": total, "new": new,
-                    "updated": updated, "skipped": skipped, "at": _now(),
-                }
+                i += 1
+            if not stopped:
+                _ingest_status[project_id] = _final("done")
         except Exception as e:  # noqa: BLE001 — Status festhalten, nicht crashen
             log.exception("Ingest fehlgeschlagen für %s", project_id)
             _ingest_status[project_id] = {
@@ -1105,6 +1134,8 @@ def _delete_project_dir(project: str) -> bool:
     True, wenn etwas gelöscht wurde. Validiert gegen Path-Traversal."""
     _validate_project(project)
     _instances.pop(project, None)
+    _ingest_status.pop(project, None)  # sonst bleibt eine Phantom-Karte bis zum Neustart
+    _ingest_control.pop(project, None)  # altes stop/pause-Flag würde ein neues gleichnamiges Projekt treffen
     target = PROJECTS_DIR / project
     if target.exists():
         shutil.rmtree(target)

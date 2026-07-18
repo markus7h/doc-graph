@@ -151,10 +151,13 @@ aufrufen muss. Jede Karte hat folgende Buttons (**Icon-only** mit Inline-SVG —
 rendern zuverlässig unabhängig vom Emoji-Font; die Beschriftung erscheint als
 Tooltip erst nach kurzem Verweilen mit der Maus, Löschen hovert rot, der Rest grün):
 
-- **Pause / Fortsetzen / Stop** (nur bei laufendem/pausiertem Ingest): steuert den
-  Import kooperativ **zwischen zwei Dokumenten** (POST `/ingest/control`) — serverseitig
-  derselbe Weg wie das MCP-Tool `ingest_control`. Pause gibt die GPU frei (mistral
-  zurück für paperless-ai), Fortsetzen lädt qwen neu. Bereits Indexiertes bleibt.
+- **Pause / Fortsetzen / Stop** (nur bei laufendem/pausiertem Ingest): wirkt
+  **sofort** — das laufende Dokument wird mitten in der Verarbeitung abgebrochen
+  (POST `/ingest/control`, serverseitig derselbe Weg wie das MCP-Tool
+  `ingest_control`). **Stop** bricht ab; das gerade laufende Dokument geht verloren
+  (bereits fertig indexierte Dokumente bleiben). **Pause** gibt die GPU frei (mistral
+  zurück für paperless-ai); **Fortsetzen** lädt qwen neu und verarbeitet das
+  abgebrochene Dokument komplett neu (kein halb-indexierter Stand).
 - **Erstellen/Aktualisieren:** Rendert den Graphen aus `.graphml` (POST `/refresh`).
 - **Umbenennen:** Öffnet ein Eingabefeld für den neuen Anzeigenamen (POST `/rename`).
 - **Löschen:** Entfernt den Projekt-Index nach Browser-Bestätigung (Quelldokumente
@@ -252,7 +255,7 @@ docker compose -f /var/local/mydocker/doc-graph/docker-compose.yml up -d
 | `list_projects()` | Projekte + Dokumentzahl (zeigt project_id, optional Anzeigename in Klammern) |
 | `ingest_paperless(project_id, tag/document_type/correspondent/query_text, regelwerk)` | Delta-Indexierung aus Paperless (Hash-Manifest, nur Neues/Geändertes) — Extraktion läuft im Hintergrund, das Tool kehrt sofort zurück. `regelwerk=True` für Bedingungswerke/Verträge (siehe unten) |
 | `ingest_status(project_id)` | Fortschritt/Ergebnis des laufenden bzw. letzten Ingest-Laufs. Feld `docs` zeigt die **echten** LightRAG-Zustände (`processed`/`processing`/`pending`/`failed`) — nur `processed` heißt wirklich im Graph; `state:done` heißt nur „Dispatch fertig" |
-| `ingest_control(project_id, action)` | Steuert einen laufenden Ingest: `pause` (hält nach dem aktuellen Dokument an, gibt die GPU frei → mistral zurück für paperless-ai), `resume` (lädt qwen neu, macht weiter), `stop` (bricht ab, bereits Indexiertes bleibt) |
+| `ingest_control(project_id, action)` | Steuert einen laufenden Ingest: `pause` (bricht das laufende Dokument sofort ab und gibt die GPU frei → mistral zurück für paperless-ai), `resume` (lädt qwen neu, verarbeitet das abgebrochene Dokument neu), `stop` (bricht sofort ab; das laufende Dokument geht verloren, bereits fertig Indexiertes bleibt) |
 | `ingest_directory(project_id, subpath, regelwerk)` | .txt/.md/.pdf aus gemountetem Verzeichnis (PDF via pdftotext, kein OCR — gescannte Bilder über Paperless) |
 | `query(project_id, question, mode, only_context, max_total_tokens)` | Abfrage: local / global / hybrid / mix / naive. `only_context` ist **default True** (Claude formuliert aus dem Kontext); die lokale LLM-Formulierung ist auf geteilter GPU zu langsam. `max_total_tokens` (default 12000) deckelt den Kontext, damit er das MCP-Token-Limit nicht sprengt |
 | `get_entity(project_id, entity_name)` | Alle Fakten/Relationen zu einer Entität |
