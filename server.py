@@ -31,7 +31,9 @@ from pathlib import Path
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-from graphview import color_for, graph_html, index_html
+from graphview import (
+    edge_dict, graph_html, graph_subset, index_html, node_dict,
+)
 
 import numpy as np
 
@@ -840,19 +842,21 @@ def _get_project_name(project_id: str) -> str:
 # Graph-Viewer: live gedeckelte Knoten/Kanten aus dem GraphML
 # ----------------------------------------------------------------------------
 # Der Viewer bettet die Knoten nicht mehr komplett ein, sondern lädt sie per
-# fetch über /<proj>/nodes — serverseitig auf MAX_GRAPH_NODES gedeckelt. Das
-# Parsen der GraphML ist der teure Teil und wird pro Projekt über die Datei-mtime
-# gecacht (invalidiert automatisch, sobald ein Ingest/Restore die Datei ändert).
-_graph_cache: dict[str, tuple[float, "object", dict]] = {}
+# fetch über /<proj>/nodes — serverseitig auf MAX_GRAPH_NODES gedeckelt (Subset-
+# Logik in graphview.graph_subset, stdlib-testbar). Das Parsen der GraphML ist der
+# teure Teil und wird pro Projekt über die Datei-mtime gecacht (invalidiert
+# automatisch, sobald ein Ingest/Restore die Datei ändert).
+_graph_cache: dict[str, tuple[float, dict]] = {}
 
 
 def _graphml_path(project_id: str) -> Path | None:
     return next((PROJECTS_DIR / project_id).glob("*.graphml"), None)
 
 
-def _load_graph_cached(project_id: str):
-    """(G, degree) für ein Projekt, gecacht über die graphml-mtime.
-    None, wenn das Projekt (noch) keinen Graphen hat."""
+def _load_graph_data(project_id: str) -> dict | None:
+    """Viewer-fertige, gecachte Graphdaten für ein Projekt oder None (kein Graph).
+    Liefert {nodes:{id:node_dict}, edges:[edge_dict], adj:{id:set}, degree:{id:int}}.
+    Cache-Key ist die graphml-mtime."""
     import networkx as nx
 
     path = _graphml_path(project_id)
@@ -861,81 +865,32 @@ def _load_graph_cached(project_id: str):
     mtime = path.stat().st_mtime
     cached = _graph_cache.get(project_id)
     if cached and cached[0] == mtime:
-        return cached[1], cached[2]
-    G = nx.read_graphml(str(path))
+        return cached[1]
+    try:
+        G = nx.read_graphml(str(path))
+    except Exception:  # noqa: BLE001 — z.B. halb geschriebene Datei während eines Ingests
+        log.warning("GraphML für %s nicht lesbar (evtl. Ingest läuft)", project_id)
+        return cached[1] if cached else None
+    nodes = {n: node_dict(n, d) for n, d in G.nodes(data=True)}
+    edges = [edge_dict(u, v, d) for u, v, d in G.edges(data=True)]
+    adj: dict[str, set] = {n: set() for n in nodes}
+    for e in edges:
+        if e["from"] in adj:
+            adj[e["from"]].add(e["to"])
+        if e["to"] in adj:
+            adj[e["to"]].add(e["from"])
     degree = dict(G.degree())
-    _graph_cache[project_id] = (mtime, G, degree)
-    return G, degree
+    gd = {"nodes": nodes, "edges": edges, "adj": adj, "degree": degree}
+    _graph_cache[project_id] = (mtime, gd)
+    return gd
 
 
-def _node_dict(n, d: dict) -> dict:
-    etype = d.get("entity_type", "")
-    return {"id": n, "label": str(n).strip('"'), "group": etype,
-            "color": color_for(etype), "desc": d.get("description", "")[:400]}
-
-
-def _edge_dict(u, v, d: dict) -> dict:
-    tip = d.get("description") or d.get("keywords") or ""
-    return {"from": u, "to": v, "desc": str(tip)[:400]}
-
-
-def _graph_subset(G, degree: dict, *, limit: int = MAX_GRAPH_NODES,
-                  focus: str | None = None, depth: int = 1,
-                  q: str | None = None, hide: set[str] | None = None) -> dict:
-    """Baut ein auf `limit` gedeckeltes Knoten/Kanten-Subset für den Viewer.
-    Priorisierung beim Deckeln: Knotengrad (mangels Score-Feld im GraphML).
-    Liefert {nodes, edges, total, shown, capped, types}. `total` = Größe der
-    (gefilterten) Kandidatenmenge vor dem Deckeln; `types` immer über den GANZEN
-    Graph, damit die Legende stabil bleibt."""
-    limit = max(1, min(limit, MAX_GRAPH_NODES))
-    hide = hide or set()
-
-    types: dict[str, int] = {}
-    for _, d in G.nodes(data=True):
-        t = d.get("entity_type", "")
-        types[t] = types.get(t, 0) + 1
-
-    def _visible(n) -> bool:
-        return G.nodes[n].get("entity_type", "") not in hide
-
-    if focus is not None and focus in G:
-        # BFS-Nachbarschaft bis `depth` Hops um den Anker.
-        seen = {focus}
-        frontier = {focus}
-        for _ in range(max(1, depth)):
-            nxt: set = set()
-            for u in frontier:
-                nxt.update(G.neighbors(u))
-            nxt -= seen
-            seen |= nxt
-            frontier = nxt
-        selected = [n for n in seen if _visible(n)]
-    elif q:
-        ql = q.strip().lower()
-        hits = [n for n in G.nodes if _visible(n) and ql in str(n).strip('"').lower()]
-        ctx = set(hits)  # Treffer + direkte Nachbarn als Kontext
-        for h in hits:
-            ctx.update(nb for nb in G.neighbors(h) if _visible(nb))
-        selected = list(ctx)
-    else:
-        selected = [n for n in G.nodes if _visible(n)]
-
-    total = len(selected)
-    capped = total > limit
-    if capped:
-        selected.sort(key=lambda n: degree.get(n, 0), reverse=True)
-        selected = selected[:limit]
-
-    sel = set(selected)
-    nodes = [_node_dict(n, G.nodes[n]) for n in selected]
-    edges = [_edge_dict(u, v, d) for u, v, d in G.edges(data=True)
-             if u in sel and v in sel]
-    return {
-        "nodes": nodes, "edges": edges,
-        "total": total, "shown": len(nodes), "capped": capped,
-        "types": [{"type": t, "color": color_for(t), "count": c}
-                  for t, c in sorted(types.items())],
-    }
+def _graph_counts(project_id: str) -> tuple[int, int]:
+    """(Anzahl Entities, Anzahl Kanten) für ein Projekt (0,0 ohne Graph)."""
+    gd = _load_graph_data(project_id)
+    if gd is None:
+        return 0, 0
+    return len(gd["nodes"]), len(gd["edges"])
 
 
 def _render_project_graphs(current_id: str | None = None) -> tuple[int, int]:
@@ -950,15 +905,11 @@ def _render_project_graphs(current_id: str | None = None) -> tuple[int, int]:
     names = {proj: _get_project_name(proj) for proj in projs}
 
     def _render(proj_id: str) -> tuple[int, int]:
-        loaded = _load_graph_cached(proj_id)
         proj_name = names[proj_id]
         (PROJECTS_DIR / proj_id / "graph.html").write_text(
             graph_html(f"KG: {proj_name}", projects=projs, current=proj_id, names=names),
             encoding="utf-8")
-        if loaded is None:
-            return 0, 0
-        G = loaded[0]
-        return G.number_of_nodes(), G.number_of_edges()
+        return _graph_counts(proj_id)
 
     n_nodes = n_edges = -1
     for p in projs:
@@ -1223,6 +1174,9 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             }
             # Anzahl indexierter Dokumente je Projekt aus dem Ingest-Manifest.
             counts = {p: len(_load_manifest(p)) for p in rendered}
+            # Entitäten/Kanten je gerendertem Projekt (aus dem gecachten Graphen).
+            graph_counts = {p: gc for p, has in rendered.items() if has
+                            and (gc := _graph_counts(p)) != (0, 0)}
             # Übergroße, vom Sicherheits-Guard beiseitegelegte Docs zur Entscheidung.
             flagged = {p: f for p in rendered if (f := _load_flagged(p))}
             # Echte LightRAG-Zustände in den Status mischen (Kopie, nicht mutieren):
@@ -1234,7 +1188,8 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
                     sc["docs"] = _doc_status_counts(name)
                 status_view[name] = sc
             body = index_html(items, status_view, meta, _load_backup_cfg(),
-                              project_backups, notice, counts, flagged).encode("utf-8")
+                              project_backups, notice, counts, flagged,
+                              graph_counts).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -1256,11 +1211,10 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
         except ValueError:
             self.send_error(400, "invalid project_id")
             return
-        loaded = _load_graph_cached(project_id)
-        if loaded is None:
+        gd = _load_graph_data(project_id)
+        if gd is None:
             self.send_error(404, "kein Graph fuer dieses Projekt")
             return
-        G, degree = loaded
         q = urllib.parse.parse_qs(query)
 
         def _int(name: str, default: int) -> int:
@@ -1272,10 +1226,10 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
         focus = (q.get("focus") or [""])[0] or None
         term = (q.get("q") or [""])[0] or None
         hide = {t for t in (q.get("hide") or [""])[0].split(",") if t}
-        sub = _graph_subset(
-            G, degree,
-            limit=_int("limit", MAX_GRAPH_NODES),
-            focus=focus, depth=_int("depth", 1), q=term, hide=hide,
+        limit = max(1, min(_int("limit", MAX_GRAPH_NODES), MAX_GRAPH_NODES))
+        sub = graph_subset(
+            gd["nodes"], gd["edges"], gd["adj"], gd["degree"],
+            limit=limit, focus=focus, depth=_int("depth", 1), q=term, hide=hide,
         )
         body = json.dumps(sub).encode("utf-8")
         self.send_response(200)

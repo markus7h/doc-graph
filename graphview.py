@@ -4,7 +4,6 @@ ai-rem-Graphen angelehnt: heller BG, grüner Akzent, klickbare Typ-Legende zum
 Filtern, Physik-Toggle, Typ-Chip im Info-Panel."""
 
 import hashlib
-import json
 import re
 
 # vis-network per CDN (der Browser braucht Internet). Bewusst kein Inline-Bundle:
@@ -30,6 +29,78 @@ def color_for(t: str) -> str:
 def _esc(s: str) -> str:
     return (str(s).replace("&", "&amp;").replace("<", "&lt;")
             .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def node_dict(n, d: dict) -> dict:
+    """GraphML-Knoten -> Viewer-Dict (id/label/group/color/desc)."""
+    etype = d.get("entity_type", "")
+    return {"id": n, "label": str(n).strip('"'), "group": etype,
+            "color": color_for(etype), "desc": d.get("description", "")[:400]}
+
+
+def edge_dict(u, v, d: dict) -> dict:
+    """GraphML-Kante -> Viewer-Dict (from/to/desc)."""
+    tip = d.get("description") or d.get("keywords") or ""
+    return {"from": u, "to": v, "desc": str(tip)[:400]}
+
+
+def graph_subset(nodes: dict, edges: list, adj: dict, degree: dict, *,
+                 limit: int, focus: str | None = None, depth: int = 1,
+                 q: str | None = None, hide: set | None = None) -> dict:
+    """Baut ein auf `limit` gedeckeltes Knoten/Kanten-Subset für den Viewer.
+    Reine Datenstruktur-Transformation (kein networkx) -> stdlib-testbar.
+
+    nodes  = {id: node_dict}, edges = [edge_dict], adj = {id: set(nachbar_ids)},
+    degree = {id: grad}. Priorisierung beim Deckeln: Knotengrad (kein Score im
+    GraphML). Liefert {nodes, edges, total, shown, capped, types}: `total` = Größe
+    der (gefilterten) Kandidatenmenge vor dem Deckeln; `types` immer über den
+    GANZEN Graph, damit die Legende stabil bleibt."""
+    hide = hide or set()
+
+    types: dict[str, int] = {}
+    for nd in nodes.values():
+        types[nd["group"]] = types.get(nd["group"], 0) + 1
+
+    def _visible(nid) -> bool:
+        return nodes[nid]["group"] not in hide
+
+    if focus and focus in nodes:
+        # BFS-Nachbarschaft bis `depth` Hops um den Anker.
+        seen = {focus}
+        frontier = {focus}
+        for _ in range(max(1, depth)):
+            nxt: set = set()
+            for u in frontier:
+                nxt |= adj.get(u, set())
+            nxt -= seen
+            seen |= nxt
+            frontier = nxt
+        selected = [n for n in seen if _visible(n)]
+    elif q:
+        ql = q.strip().lower()
+        hits = [n for n in nodes if _visible(n) and ql in nodes[n]["label"].lower()]
+        ctx = set(hits)  # Treffer + direkte Nachbarn als Kontext
+        for h in hits:
+            ctx |= {nb for nb in adj.get(h, set()) if _visible(nb)}
+        selected = list(ctx)
+    else:
+        selected = [n for n in nodes if _visible(n)]
+
+    total = len(selected)
+    capped = total > limit
+    if capped:
+        selected.sort(key=lambda n: degree.get(n, 0), reverse=True)
+        selected = selected[:limit]
+
+    sel = set(selected)
+    out_nodes = [nodes[n] for n in selected]
+    out_edges = [e for e in edges if e["from"] in sel and e["to"] in sel]
+    return {
+        "nodes": out_nodes, "edges": out_edges,
+        "total": total, "shown": len(out_nodes), "capped": capped,
+        "types": [{"type": t, "color": color_for(t), "count": c}
+                  for t, c in sorted(types.items())],
+    }
 
 
 def _status_badge(st: dict) -> str:
@@ -120,7 +191,7 @@ def _card_backup(e: str, backups: list[dict]) -> str:
     vorhanden) Auswahl der letzten 5 Stände + 'Wiederherstellen'."""
     save = (f'<form method="post" action="/backup/now" class="del" style="margin:0">'
             f'<input type="hidden" name="project_id" value="{e}">'
-            f'<button type="submit" title="Dieses Projekt sichern (nur bei Änderung)">Sichern</button></form>')
+            f'<button type="submit" title="Dieses Projekt sichern (nur bei Änderung)"><span class="ico">💾</span>Sichern</button></form>')
     if not backups:
         return save
     opts = "".join(f'<option value="{_esc(b["name"])}">{_esc(_backup_time(b["name"]))} '
@@ -130,7 +201,7 @@ def _card_backup(e: str, backups: list[dict]) -> str:
                f'Der jetzige Stand geht verloren.\')">'
                f'<input type="hidden" name="project_id" value="{e}">'
                f'<select name="name" style="font:inherit;font-size:12px;border:none;background:none;color:var(--muted);max-width:170px">{opts}</select>'
-               f'<button type="submit" title="Gewählten Stand zurückspielen">Wiederherstellen</button></form>')
+               f'<button type="submit" title="Gewählten Stand zurückspielen"><span class="ico">↩</span>Wiederherstellen</button></form>')
     return save + restore
 
 
@@ -214,27 +285,32 @@ def _flagged_section(p: str, flags: dict) -> str:
 def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: dict | None = None,
                backup_cfg: dict | None = None, project_backups: dict | None = None,
                notice: str | None = None, counts: dict | None = None,
-               flagged: dict | None = None) -> str:
+               flagged: dict | None = None, graph_counts: dict | None = None) -> str:
     """Landing-Page für den Viewer-Root. items = (projekt_id, hat_graph_html).
     status = {projekt_id: ingest_status_dict} — zeigt Import-Fortschritt pro Karte.
     meta = {projekt_id: {"project_name": "..."}} — Anzeigenamen.
     counts = {projekt_id: anzahl_indexierter_dokumente} — pro Karte angezeigt.
+    graph_counts = {projekt_id: (anzahl_entities, anzahl_kanten)} — pro Karte angezeigt.
     backup_cfg — Backup-Zeitplan. project_backups = {projekt_id: [{name,size}]} je Projekt.
     flagged = {projekt_id: {doc_key: info}} — übergroße Docs zur Nutzerentscheidung.
     Erklärt, was zu sehen ist und wie es weitergeht (statt rohem Dir-Listing)."""
     status = status or {}
     meta = meta or {}
     counts = counts or {}
+    graph_counts = graph_counts or {}
     project_backups = project_backups or {}
     flagged = flagged or {}
     # Auto-Refresh auch bei 'paused', damit Fortsetzen/Fortschritt sichtbar wird.
     running = any(s.get("state") in ("running", "paused") for s in status.values())
 
+    _CTL_ICON = {"pause": "⏸", "resume": "▶", "stop": "■"}
+
     def _ctl_form(e: str, action: str, label: str) -> str:
+        icon = _CTL_ICON.get(action, "")
         return (f'<form method="post" action="/ingest/control" class="del" style="margin-right:6px">'
                 f'<input type="hidden" name="project_id" value="{e}">'
                 f'<input type="hidden" name="action" value="{action}">'
-                f'<button title="Ingest {label.lower()}">{label}</button></form>')
+                f'<button title="Ingest {label.lower()}"><span class="ico">{icon}</span>{label}</button></form>')
 
     def _row(p: str, has: bool) -> str:
         e = _esc(p)
@@ -247,26 +323,36 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
         # abgeschlossene/fehlerhafte Zustände bleiben als kompaktes Inline-Badge.
         badge = "" if live else _status_badge(st)
         n = counts.get(p)
-        docs = f'<span class="hint">{n} Dokument{"" if n == 1 else "e"}</span>' if n else ""
-        left = (f'<a class="nm open" href="./{e}/graph.html">{_esc(display_name)}'
-                '<span class="go"> · Graph öffnen →</span></a>' if has else
+        # Kennzahlen der Karte: Dokumente + (falls Graph gerendert) Entitäten & Kanten.
+        stats = []
+        if n:
+            stats.append(f'{n} Dokument{"" if n == 1 else "e"}')
+        gc = graph_counts.get(p)
+        if gc:
+            ne, nk = gc
+            stats.append(f'{ne:,} Entität{"" if ne == 1 else "en"}'.replace(",", "."))
+            stats.append(f'{nk:,} Kante{"" if nk == 1 else "n"}'.replace(",", "."))
+        docs = f'<span class="hint">{" · ".join(stats)}</span>' if stats else ""
+        # Der Projektname selbst ist der Link zum Graphen (item 2).
+        left = (f'<a class="nm open" href="./{e}/graph.html" title="Graph öffnen">{_esc(display_name)} →</a>'
+                if has else
                 f'<span class="nm">{_esc(display_name)}</span>'
                 f'<span class="hint">noch nicht gerendert</span>') + docs + badge
         # Buttons: Erstellen/Aktualisieren (POST /refresh) + Umbenennen + Löschen
         refresh_form = (f'<form method="post" action="/refresh" class="del" style="margin-right:6px">'
                        f'<input type="hidden" name="project_id" value="{e}">'
-                       f'<button title="{"Graph aktualisieren" if has else "Graph erstellen"}">{"Aktualisieren" if has else "Erstellen"}</button></form>')
+                       f'<button title="{"Graph aktualisieren" if has else "Graph erstellen"}"><span class="ico">{"↻" if has else "＋"}</span>{"Aktualisieren" if has else "Erstellen"}</button></form>')
         rename_form = (f'<form method="post" action="/rename" class="del" style="margin-right:6px" '
                       f'onsubmit="const n=prompt(\'Neuer Anzeigename für &quot;{e}&quot;:\', \'{_esc(display_name)}\'); '
                       f'if(n===null) return false; document.querySelector(\'input[name=project_name]\').value=n; return true;">'
                       f'<input type="hidden" name="project_id" value="{e}">'
                       f'<input type="hidden" name="project_name" value="">'
-                      '<button type="submit" title="Anzeigenamen ändern">Umbenennen</button></form>')
+                      '<button type="submit" title="Anzeigenamen ändern"><span class="ico">✎</span>Umbenennen</button></form>')
         delete_form = (f'<form method="post" action="/delete" class="del" '
                       f"onsubmit=\"return confirm('Projekt &quot;{e}&quot; löschen? "
                       "Der Index wird entfernt, die Quelldokumente bleiben.')\">"
                       f'<input type="hidden" name="project_id" value="{e}">'
-                      '<button title="Projekt-Index löschen">Löschen</button></form>')
+                      '<button title="Projekt-Index löschen"><span class="ico">🗑</span>Löschen</button></form>')
         # Pause/Fortsetzen + Stop nur, solange ein Ingest läuft oder pausiert ist.
         if state == "running":
             control_forms = _ctl_form(e, "pause", "Pause") + _ctl_form(e, "stop", "Stop")
@@ -313,10 +399,11 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
   .actions{{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}}
   .card:hover{{box-shadow:0 3px 14px rgba(0,0,0,.08)}}
   .card.todo{{border-left-color:#bbb}}
-  .prog{{display:flex;align-items:center;gap:12px;margin-top:12px;padding-top:12px;
+  .prog{{display:flex;flex-direction:column;align-items:stretch;gap:8px;margin-top:12px;padding-top:12px;
     border-top:1px solid var(--border)}}
-  .prog .bar{{flex:1;height:7px;background:var(--bg);border:1px solid var(--border);
+  .prog .bar{{width:100%;height:7px;background:var(--bg);border:1px solid var(--border);
     border-radius:20px;overflow:hidden}}
+  .ico{{margin-right:5px;font-size:11px}}
   .prog .fill{{height:100%;background:var(--accent);border-radius:20px;transition:width .4s ease}}
   .prog .fill.paused{{background:#ffb300}}
   .left{{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;min-width:0}}
@@ -440,21 +527,25 @@ def graph_html(title: str, projects: list[str] | None = None,
   </form>
   <label class="muted"><input type="checkbox" id="phys" checked onchange="net&&net.setOptions({{physics:{{enabled:this.checked}}}})"> Physik</label>
   <label class="muted" title="Knoten anklicken, dann anhaken: zeigt nur dessen Nachbarschaft (Doppelklick setzt Anker um)"><input type="checkbox" id="focus" onchange="setFocus()"> nur Verbundene</label>
-  <label class="muted" title="Nachbarschafts-Tiefe in Hops">Distanz <input type="number" id="depth" value="1" min="1" style="width:3em" onchange="build()"></label>
+  <label class="muted" title="Nachbarschafts-Tiefe in Hops">Distanz <input type="number" id="depth" value="1" min="1" style="width:3em" onchange="fetchGraph()"></label>
   <span class="muted">Typ-Filter: Legende anklicken</span>
   <button type="button" onclick="toggleAll()" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:5px 11px;font-size:12px;cursor:pointer;white-space:nowrap;transition:all .15s" title="Alle Typen ein- oder ausblenden">alle an/aus</button>
-  <input id="q" oninput="applySearch()" placeholder="Knoten suchen…" title="Treffer werden rot hervorgehoben und angefahren" style="font:inherit;font-size:12px;padding:5px 9px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text);width:11em">
+  <input id="q" oninput="onSearch()" placeholder="Knoten suchen…" title="Sucht im ganzen Graph (Server); Treffer werden rot hervorgehoben und angefahren" style="font:inherit;font-size:12px;padding:5px 9px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text);width:11em">
 </div>
 <div id="netwrap"><div id="net"></div><div id="info"></div></div>
 <div id="leg"></div>
 <script>
   const $=id=>document.getElementById(id);
   const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}}[c]));
-  const data = {payload};
-  const COL={{}};                       // Typ -> Farbe (aus den Node-Farben)
-  data.nodes.forEach(n=>{{ if(n.group && !(n.group in COL)) COL[n.group]=n.color||'#636363'; }});
+  // Knoten/Kanten werden NICHT eingebettet, sondern live vom Server geladen und
+  // dort auf die Maximalzahl gedeckelt. data hält nur das aktuelle Subset.
+  let data={{nodes:[],edges:[]}};
+  let TYPES=[];                         // vollständige Typliste vom Server (stabile Legende)
+  let META={{total:0,shown:0,capped:false}};
+  const COL={{}};                       // Typ -> Farbe (aus TYPES)
   const HIDE=new Set();                 // ausgeblendete Typen (Legende)
-  let net=null, nodesDS=null, SEL=null, FOCUS=null;   // SEL=angeklickt, FOCUS=Fokus-Anker
+  let net=null, nodesDS=null, NODEMAP=new Map(), SEL=null, FOCUS=null;  // SEL=angeklickt, FOCUS=Fokus-Anker
+  let searchTimer=null;
 
   function showInfo(header, group, body){{
     const chip=group?`<span class="chip" style="background:${{COL[group]||'#636363'}}">${{esc(group)}}</span>`:'';
@@ -463,49 +554,67 @@ def graph_html(title: str, projects: list[str] | None = None,
     $('info').style.display='block';
   }}
 
-  function build(){{
-    let ents=data.nodes.filter(n=>!HIDE.has(n.group));
-    if($('focus').checked&&FOCUS){{  // Anker + Nachbarn bis Distanz n (BFS)
-      const depth=Math.max(1,+$('depth').value||1);
-      const nb=new Set([FOCUS]);
-      for(let d=0;d<depth;d++){{
-        const cur=new Set(nb);  // Snapshot: genau eine Distanz pro Runde
-        data.edges.forEach(e=>{{if(cur.has(e.from))nb.add(e.to);if(cur.has(e.to))nb.add(e.from);}});
-      }}
-      ents=ents.filter(n=>nb.has(n.id));
-    }}
-    const ok=new Set(ents.map(n=>n.id));
-    const nodes=ents.map(n=>({{id:n.id,label:n.label,color:n.color,
+  // Zentraler Server-Roundtrip: baut die Query aus dem aktuellen UI-Zustand
+  // (Fokus/Distanz/Suche/ausgeblendete Typen) und lädt das gedeckelte Subset.
+  async function fetchGraph(){{
+    const p=new URLSearchParams();
+    if(FOCUS&&$('focus').checked){{p.set('focus',FOCUS);p.set('depth',Math.max(1,+$('depth').value||1));}}
+    const q=($('q').value||'').trim();
+    if(q) p.set('q',q);
+    if(HIDE.size) p.set('hide',[...HIDE].join(','));
+    $('cnt').textContent='lädt…';
+    let res;
+    try{{ res=await fetch('nodes?'+p.toString()); }}
+    catch(e){{ $('cnt').textContent='Netzwerkfehler'; return; }}
+    if(!res.ok){{ $('cnt').textContent='Fehler '+res.status; return; }}
+    const j=await res.json();
+    data={{nodes:j.nodes||[],edges:j.edges||[]}};
+    TYPES=j.types||[];
+    META={{total:j.total||0,shown:j.shown||0,capped:!!j.capped}};
+    NODEMAP=new Map(data.nodes.map(n=>[n.id,n]));
+    Object.keys(COL).forEach(k=>delete COL[k]);
+    TYPES.forEach(t=>{{COL[t.type]=t.color;}});
+    renderLeg();
+    build();
+  }}
+
+  function build(){{  // rendert das bereits geladene (≤ Limit) Subset
+    const nodes=data.nodes.map(n=>({{id:n.id,label:n.label,color:n.color,
       shape:'dot',size:14,font:{{size:13,color:'#333'}}}}));
+    const ok=new Set(data.nodes.map(n=>n.id));
     const edges=data.edges.filter(e=>ok.has(e.from)&&ok.has(e.to)).map(e=>({{
       from:e.from,to:e.to,desc:e.desc,arrows:'to',
       smooth:{{type:'continuous'}},color:{{color:'#ccc'}}}}));
-    $('cnt').textContent=`${{nodes.length}} Knoten · ${{edges.length}} Kanten`;
+    const cap=META.capped?` von ${{META.total}}`:'';
+    $('cnt').textContent=`${{nodes.length}}${{cap}} Knoten · ${{edges.length}} Kanten`;
     nodesDS=new vis.DataSet(nodes);
     const edgesDS=new vis.DataSet(edges);
     net=new vis.Network($('net'),{{nodes:nodesDS,edges:edgesDS}},{{
       physics:{{enabled:$('phys').checked,stabilization:{{iterations:150}},barnesHut:{{gravitationalConstant:-8000,springLength:130}}}},
       interaction:{{hover:true}}}});
     net.on('click',p=>{{
-      if(p.nodes.length){{SEL=p.nodes[0];const src=data.nodes.find(x=>x.id===SEL);showInfo(src.label,src.group,src.desc);}}
+      if(p.nodes.length){{SEL=p.nodes[0];const src=NODEMAP.get(SEL);if(src)showInfo(src.label,src.group,src.desc);}}
       else if(p.edges.length){{const e=edgesDS.get(p.edges[0]);const u=nodesDS.get(e.from),v=nodesDS.get(e.to);
         showInfo((u?u.label:e.from)+' → '+(v?v.label:e.to),'',e.desc);}}
       else{{SEL=null;$('info').style.display='none';}}
     }});
-    net.on('doubleClick',p=>{{  // Doppelklick im Fokus-Modus: Anker umsetzen
-      if(p.nodes.length&&$('focus').checked){{FOCUS=SEL=p.nodes[0];
-        const src=data.nodes.find(x=>x.id===FOCUS);showInfo(src.label,src.group,src.desc);build();}}
+    net.on('doubleClick',p=>{{  // Doppelklick: Anker setzen und Nachbarschaft nachladen
+      if(p.nodes.length){{FOCUS=SEL=p.nodes[0];
+        const src=NODEMAP.get(FOCUS);if(src)showInfo(src.label,src.group,src.desc);
+        if(!$('focus').checked)$('focus').checked=true;
+        fetchGraph();}}
     }});
-    applySearch();  // Filter/Fokus-Wechsel behält aktive Suche
+    highlight();  // aktive Suche im neuen Subset markieren
   }}
-  function setFocus(){{FOCUS=$('focus').checked?SEL:null;build();}}  // Anker = aktuelle Auswahl
+  function setFocus(){{FOCUS=$('focus').checked?SEL:null;fetchGraph();}}  // Anker = aktuelle Auswahl
+  function onSearch(){{clearTimeout(searchTimer);searchTimer=setTimeout(fetchGraph,300);}}  // debounced Server-Suche
 
-  function applySearch(){{  // Treffer rot hervorheben + anfahren, Rest dimmen
+  function highlight(){{  // Treffer rot hervorheben + anfahren, Rest dimmen (im geladenen Subset)
     if(!net||!nodesDS) return;
     const q=($('q').value||'').trim().toLowerCase();
     const upd=[]; let first=null;
     nodesDS.getIds().forEach(id=>{{
-      const src=data.nodes.find(x=>x.id===id);  // ponytail: O(n²), Map bei großen Graphen
+      const src=NODEMAP.get(id);
       const base=(src&&src.color)||'#636363';
       const hit=q&&src&&String(src.label||'').toLowerCase().includes(q);
       if(hit&&first===null) first=id;
@@ -514,19 +623,19 @@ def graph_html(title: str, projects: list[str] | None = None,
     }});
     nodesDS.update(upd);
     if(first!==null){{net.selectNodes([first]);net.focus(first,{{scale:1.2,animation:true}});
-      const src=data.nodes.find(x=>x.id===first);if(src)showInfo(src.label,src.group,src.desc);}}
+      const src=NODEMAP.get(first);if(src)showInfo(src.label,src.group,src.desc);}}
   }}
 
-  function toggleType(t){{HIDE.has(t)?HIDE.delete(t):HIDE.add(t);renderLeg();build();}}
+  function toggleType(t){{HIDE.has(t)?HIDE.delete(t):HIDE.add(t);renderLeg();fetchGraph();}}
   function toggleAll(){{  // mind. ein Typ sichtbar -> alle aus, sonst alle ein
     if(HIDE.size<Object.keys(COL).length) Object.keys(COL).forEach(t=>HIDE.add(t));
     else HIDE.clear();
-    renderLeg();build();
+    renderLeg();fetchGraph();
   }}
   function renderLeg(){{
-    $('leg').innerHTML=Object.entries(COL).map(([t,c])=>
-      `<span onclick="toggleType('${{esc(t)}}')" style="opacity:${{HIDE.has(t)?0.35:1}}" title="${{HIDE.has(t)?'einblenden':'ausblenden'}}"><i class="dot" style="background:${{c}}"></i>${{esc(t)}}</span>`).join('');
+    $('leg').innerHTML=TYPES.map(t=>
+      `<span onclick="toggleType('${{esc(t.type)}}')" style="opacity:${{HIDE.has(t.type)?0.35:1}}" title="${{HIDE.has(t.type)?'einblenden':'ausblenden'}} (${{t.count}})"><i class="dot" style="background:${{t.color}}"></i>${{esc(t.type)}}</span>`).join('');
   }}
 
-  renderLeg(); build();
+  fetchGraph();  // initiales Laden (Top-Knoten nach Grad, gedeckelt)
 </script></body></html>"""

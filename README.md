@@ -95,13 +95,27 @@ danach von allen Clients gleichermaßen nutzbar.
 (vis-network, Optik an den ai-rem-Graphen angelehnt: heller Hintergrund,
 grüner Akzent): Knoten = Entitäten (gefärbt nach Typ), Kanten = Beziehungen.
 Details (Beschreibung) erscheinen per Klick auf Knoten/Kante in einem
-mehrzeiligen Panel. Bedienung:
+mehrzeiligen Panel.
 
-- **Typ-Filter:** Legende unten anklicken blendet Entitätstypen aus/ein.
+**Live geladen, gedeckelt auf max. Knotenzahl.** Große Graphen (tausende
+Entitäten) würden vis-network unbrauchbar langsam machen. Die `graph.html` bettet
+die Knoten daher nicht mehr komplett ein, sondern lädt sie per `fetch` vom
+Endpoint `GET /<project_id>/nodes` — serverseitig auf **`GRAPH_MAX_NODES`**
+(default **2500**) gedeckelt. Beim Deckeln gewinnen die **verbindungsstärksten**
+Knoten (höchster Knotengrad — es gibt kein Score-Feld im GraphML). Der Zähler oben
+zeigt dann „2500 von N Knoten". Der volle Graph bleibt im `.graphml` erhalten und
+über Fokus/Suche/Typ-Filter (jeweils ein Server-Roundtrip, s.u.) erreichbar. Das
+GraphML wird pro Projekt über seine Datei-mtime gecacht, das Parsen läuft also
+nicht bei jedem Klick neu. Bedienung:
+
+- **Typ-Filter:** Legende unten anklicken blendet Entitätstypen aus/ein (lädt das
+  gefilterte Subset neu vom Server). Die Legende zeigt alle Typen mit Anzahl —
+  auch solche, die im aktuell geladenen Subset gerade nicht sichtbar sind.
 - **Physik:** Checkbox schaltet das Force-Layout an/aus.
 - **nur Verbundene / Distanz:** Knoten anklicken, dann „nur Verbundene" anhaken —
-  zeigt nur dessen Nachbarschaft bis zur eingestellten `Distanz` (Hops). Doppelklick
-  setzt den Anker auf einen anderen Knoten um.
+  lädt vom Server dessen Nachbarschaft bis zur eingestellten `Distanz` (Hops).
+  Doppelklick setzt den Anker auf einen anderen Knoten um. So erreicht man auch
+  Knoten außerhalb des initialen Top-Sets.
 - **← Übersicht:** Link oben links zurück zur Projektübersicht (Landing-Page).
 - **Projekt-Umschalter:** Dropdown oben wechselt zur `graph.html` eines anderen
   Projekts (erscheint ab zwei indexierten Projekten, zeigt optional den Anzeigenamen).
@@ -109,8 +123,10 @@ mehrzeiligen Panel. Bedienung:
   (keine LLM-Extraktion, schnell). Nötig z.B. nach `rename_project`.
 - **Umbenennen-Button:** Öffnet ein Eingabefeld für den neuen Anzeigenamen (ersetzt die Notwendigkeit, `rename_project()` im Code aufzurufen).
 - **alle an/aus:** Blendet alle Typen der Legende auf einmal ein bzw. aus (Toggle).
-- **Suche:** Suchfeld oben — Treffer (Teiltreffer im Knotennamen) werden rot hervorgehoben,
-  der erste wird angefahren, der Rest gedimmt. Feld leeren stellt die normale Ansicht wieder her.
+- **Suche:** Suchfeld oben — sucht **im ganzen Graphen** (serverseitig, entprellt):
+  lädt Treffer (Teiltreffer im Knotennamen) plus deren direkte Nachbarn, hebt sie rot
+  hervor, fährt den ersten an und dimmt den Rest. So findet man auch Knoten jenseits
+  des initialen Top-Sets. Feld leeren stellt die normale (gedeckelte) Ansicht wieder her.
 
 Das Tool gibt die URL zurück:
 
@@ -119,9 +135,10 @@ http://myubuntu:5776/<project_id>/graph.html
 ```
 
 Der Viewer-Root (`http://myubuntu:5776/`) zeigt eine Landing-Page: alle
-indexierten Projekte als Karten mit ihrem Anzeigenamen (falls gesetzt) und der
-**Anzahl indexierter Dokumente** (aus dem Ingest-Manifest). Klick öffnet
-den Graphen. Läuft gerade ein `ingest_paperless`, trägt die betroffene Karte ein
+indexierten Projekte als Karten mit ihrem Anzeigenamen (falls gesetzt) und ihren
+Kennzahlen — **Anzahl indexierter Dokumente** (aus dem Ingest-Manifest) sowie, bei
+gerendertem Graph, **Anzahl Entitäten und Kanten** (aus dem `.graphml`). Der
+**Projektname selbst ist der Link** zum Graphen. Läuft gerade ein `ingest_paperless`, trägt die betroffene Karte ein
 **Import-Status-Badge** (⏳ läuft `done/total` / ⏸ pausiert / ⏹ abgebrochen /
 ✓ zuletzt indexiert / ✗ Fehler). Bei laufendem/pausiertem Import rutscht das Badge
 in eine eigene, vollbreite Fortschrittszeile unter den Buttons — mit **Fortschrittsbalken**
@@ -324,6 +341,10 @@ docker compose -f /var/local/mydocker/doc-graph/docker-compose.yml up -d
   Beschreibungen. LightRAG-Default wäre `English` (Graph-Einträge landen dann
   englisch trotz deutscher Docs). Wirkt nur auf **neu** indexierte Dokumente —
   Bestand für deutsche Einträge `delete_project` + Re-Ingest.
+- **`GRAPH_MAX_NODES`** (default `2500`): Obergrenze gleichzeitig im Viewer
+  geladener Entitäten. Der `/<project_id>/nodes`-Endpoint deckelt jedes Subset
+  hierauf (Priorisierung nach Knotengrad); schützt Browser und Force-Layout vor
+  Graphen mit tausenden Knoten. Höher setzen macht den Viewer träger, nicht kaputt.
 - **Backup:** `./data/projects/` sichern; das ist der komplette Zustand
   (Graph GraphML, Vektoren, KV-Store, Manifest — alles Dateien, kein DB-Server).
 - **Speicher-Backends:** Default sind Datei-basierte Stores (NetworkX +

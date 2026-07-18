@@ -1,32 +1,71 @@
-"""Selbsttest für graphview.graph_html — reine stdlib, kein Container nötig.
+"""Selbsttest für graphview — reine stdlib, kein Container nötig.
 Lauf: python test_graph.py"""
 
-import json
 import re
 
-from graphview import color_for, graph_html, index_html
+from graphview import color_for, graph_html, graph_subset, index_html, node_dict
 
 
-def test_embedding_and_escaping():
-    nodes = [
-        {"id": "Müller", "label": "Müller", "group": "person", "color": color_for("person")},
-        # bösartig: enthält </script>, darf das eingebettete Script nicht sprengen
-        {"id": "x", "label": "</script><b>hack</b>", "group": "", "color": color_for("")},
-    ]
-    edges = [{"from": "Müller", "to": "x", "title": "kennt <& >"}]
-    html = graph_html(nodes, edges, "Test")
+def test_graph_shell_fetches_live():
+    # graph.html ist jetzt eine Shell: KEIN eingebetteter Knoten-Payload, sondern
+    # ein relativer fetch auf den serverseitig gedeckelten /nodes-Endpoint.
+    html = graph_html("KG: Test", projects=["a", "b"], current="a")
+    assert "KG: Test" in html
+    assert "const data = {" not in html and "const data ={" not in html, "Knoten dürfen nicht mehr eingebettet sein"
+    assert "fetch('nodes?" in html, "Viewer lädt Knoten nicht live per fetch"
+    # nur die zwei echten Script-Tags: CDN-Einbindung + eigener Viewer-Block
+    assert html.count("</script>") == 2
 
-    # nur die zwei echten Template-Tags (CDN + Daten); das </script> aus den
-    # Daten muss escaped sein, sonst wären es drei
-    assert html.count("</script>") == 2, "eingebettetes </script> nicht escaped"
-    assert "\\u003c/script>" in html, "bösartiges </script> nicht als \\u003c escaped"
-    # das eingebettete JSON ist wieder parsebar (< als < zurückübersetzen)
-    m = re.search(r"const data = (\{.*\});", html)
-    assert m, "data-Objekt nicht gefunden"
-    data = json.loads(m.group(1).replace("\\u003c", "<"))
-    assert data["nodes"][0]["id"] == "Müller"
-    assert data["nodes"][1]["label"] == "</script><b>hack</b>"
-    assert data["edges"][0]["title"] == "kennt <& >"
+
+def test_node_dict():
+    nd = node_dict('"Müller"', {"entity_type": "person", "description": "x" * 500})
+    assert nd["label"] == "Müller"            # umgebende Quotes weg
+    assert nd["group"] == "person"
+    assert nd["color"] == color_for("person")
+    assert len(nd["desc"]) == 400             # description gekappt
+
+
+def _star():
+    """Sterngraph: hub (Grad 6) + 6 leafN (Grad 1) + 2 iso (Grad 0)."""
+    nodes = {"hub": {"id": "hub", "label": "hub", "group": "hub", "color": "#000", "desc": ""}}
+    for i in range(6):
+        nodes[f"leaf{i}"] = {"id": f"leaf{i}", "label": f"leaf{i}", "group": "leaf", "color": "#111", "desc": ""}
+    for i in range(2):
+        nodes[f"iso{i}"] = {"id": f"iso{i}", "label": f"iso{i}", "group": "iso", "color": "#222", "desc": ""}
+    edges = [{"from": "hub", "to": f"leaf{i}", "desc": ""} for i in range(6)]
+    adj = {n: set() for n in nodes}
+    for e in edges:
+        adj[e["from"]].add(e["to"])
+        adj[e["to"]].add(e["from"])
+    degree = {n: len(a) for n, a in adj.items()}
+    return nodes, edges, adj, degree
+
+
+def test_graph_subset_cap_by_degree():
+    nodes, edges, adj, degree = _star()
+    sub = graph_subset(nodes, edges, adj, degree, limit=3)
+    assert sub["total"] == 9 and sub["shown"] == 3 and sub["capped"] is True
+    ids = {n["id"] for n in sub["nodes"]}
+    assert "hub" in ids, "höchster Grad muss beim Deckeln überleben"
+    # types immer über den GANZEN Graph (stabile Legende), unabhängig vom Cap
+    tset = {t["type"]: t["count"] for t in sub["types"]}
+    assert tset == {"hub": 1, "leaf": 6, "iso": 2}
+
+
+def test_graph_subset_focus_and_hide_and_search():
+    nodes, edges, adj, degree = _star()
+    # Fokus hub, 1 Hop -> hub + 6 leaves, iso bleiben draußen
+    foc = graph_subset(nodes, edges, adj, degree, limit=2500, focus="hub", depth=1)
+    assert foc["shown"] == 7 and len(foc["edges"]) == 6
+    assert not any(n["id"].startswith("iso") for n in foc["nodes"])
+    # Typ ausblenden
+    hid = graph_subset(nodes, edges, adj, degree, limit=2500, hide={"leaf"})
+    assert {n["group"] for n in hid["nodes"]} == {"hub", "iso"}
+    # Volltextsuche zieht Treffer + direkte Nachbarn (leafN -> hub)
+    ser = graph_subset(nodes, edges, adj, degree, limit=2500, q="leaf")
+    ids = {n["id"] for n in ser["nodes"]}
+    assert "hub" in ids and all(f"leaf{i}" in ids for i in range(6))
+    assert not any(i in ids for i in ("iso0", "iso1"))
 
 
 def test_color_deterministic():
@@ -70,9 +109,21 @@ def test_index_status():
     assert 'http-equiv="refresh"' not in index_html([("fehmarn", True)])  # ohne Status
 
 
+def test_index_graph_counts():
+    # Entitäten/Kanten-Kennzahlen erscheinen zusätzlich zur Dokumentzahl.
+    html = index_html([("fehmarn", True)], counts={"fehmarn": 12},
+                      graph_counts={"fehmarn": (2500, 4200)})
+    assert "12 Dokumente" in html
+    assert "2.500 Entitäten" in html and "4.200 Kanten" in html
+
+
 if __name__ == "__main__":
-    test_embedding_and_escaping()
+    test_graph_shell_fetches_live()
+    test_node_dict()
+    test_graph_subset_cap_by_degree()
+    test_graph_subset_focus_and_hide_and_search()
     test_color_deterministic()
     test_index_html()
     test_index_status()
+    test_index_graph_counts()
     print("ok")
