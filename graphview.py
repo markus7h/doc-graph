@@ -170,9 +170,9 @@ def _status_badge(st: dict) -> str:
     return ""
 
 
-def _progress_row(st: dict) -> str:
+def _progress_row(st: dict, controls: str = "") -> str:
     """Vollbreite Fortschrittszeile für einen laufenden/pausierten Ingest:
-    Balken (done/total) + Status-Badge. Ersetzt das gequetschte Inline-Badge."""
+    Balken (done/total) + Status-Badge + Ingest-Steuerung (Pause/Stop/Fortsetzen)."""
     # Fortschritt an den echten LightRAG-Zuständen (processed), nicht am
     # Dispatch-Zähler 'done' — LightRAG batcht, 'done' bleibt lange 0.
     docs = st.get("docs") or {}
@@ -182,8 +182,9 @@ def _progress_row(st: dict) -> str:
         total = st.get("total") if isinstance(st.get("total"), int) else 0
     pct = int(done / total * 100) if total else 0
     fill_cls = "fill paused" if st.get("state") == "paused" else "fill"
+    ctl = f'<div class="prog-ctl">{controls}</div>' if controls else ""
     return (f'<div class="prog"><div class="bar"><div class="{fill_cls}" '
-            f'style="width:{pct}%"></div></div>{_status_badge(st)}</div>')
+            f'style="width:{pct}%"></div></div>{_status_badge(st)}{ctl}</div>')
 
 
 # doc-graph-Icon (Variante 2): grünes Dokument mit Textzeilen + herausragendem
@@ -394,9 +395,11 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
         else:
             control_forms = ""
         backup_forms = _card_backup(e, project_backups.get(p, []))
-        forms = control_forms + refresh_form + rename_form + backup_forms + delete_form
+        # Pause/Stop wandern zur Fortschrittszeile (thematisch bei der Ingest-Anzeige),
+        # nicht zwischen die Verwaltungsbuttons oben.
+        forms = refresh_form + rename_form + backup_forms + delete_form
         cls = "card" if has else "card todo"
-        progress = _progress_row(st) if live else ""
+        progress = _progress_row(st, control_forms) if live else ""
         flags = _flagged_section(p, flagged.get(p, {}))
         return (f'<div class="{cls}"><div class="cardhead"><div class="left">{left}</div>'
                 f'<div class="actions">{forms}</div></div>{progress}{flags}</div>')
@@ -451,6 +454,7 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
   .del.danger button.ib:hover{{border-color:#dd3333;color:#dd3333;background:#fff5f5}}
   .prog .fill{{height:100%;background:var(--accent);border-radius:20px;transition:width .4s ease}}
   .prog .fill.paused{{background:#ffb300}}
+  .prog-ctl{{display:flex;gap:6px;flex-shrink:0}}
   .left{{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;min-width:0}}
   .nm{{font-weight:600;font-size:15px;color:var(--text);text-decoration:none}}
   a.nm.open:hover .go{{text-decoration:underline}}
