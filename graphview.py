@@ -170,9 +170,9 @@ def _status_badge(st: dict) -> str:
     return ""
 
 
-def _progress_row(st: dict) -> str:
+def _progress_row(st: dict, controls: str = "") -> str:
     """Vollbreite Fortschrittszeile für einen laufenden/pausierten Ingest:
-    Balken (done/total) + Status-Badge. Ersetzt das gequetschte Inline-Badge."""
+    Balken (done/total) + Status-Badge + Ingest-Steuerung (Pause/Stop/Fortsetzen)."""
     # Fortschritt an den echten LightRAG-Zuständen (processed), nicht am
     # Dispatch-Zähler 'done' — LightRAG batcht, 'done' bleibt lange 0.
     docs = st.get("docs") or {}
@@ -182,8 +182,9 @@ def _progress_row(st: dict) -> str:
         total = st.get("total") if isinstance(st.get("total"), int) else 0
     pct = int(done / total * 100) if total else 0
     fill_cls = "fill paused" if st.get("state") == "paused" else "fill"
+    ctl = f'<div class="prog-ctl">{controls}</div>' if controls else ""
     return (f'<div class="prog"><div class="bar"><div class="{fill_cls}" '
-            f'style="width:{pct}%"></div></div>{_status_badge(st)}</div>')
+            f'style="width:{pct}%"></div></div>{_status_badge(st)}{ctl}</div>')
 
 
 # doc-graph-Icon (Variante 2): grünes Dokument mit Textzeilen + herausragendem
@@ -204,6 +205,28 @@ _LOGO = (
     '<circle cx="43" cy="18" r="4" fill="#1b5e20"/>'
     '<circle cx="49" cy="32" r="4.5" fill="#8bc34a"/></svg>'
 )
+
+# Browser-Favicon: dasselbe Motiv quadratisch (0 0 48), transparenter Hintergrund,
+# als data-URI (# -> %23, sonst bricht die URL). Setzt zugleich den 404 auf
+# /favicon.ico still, weil der Browser dann diese Deklaration nimmt.
+_FAVICON = (
+    "data:image/svg+xml,"
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'>"
+    "<defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'>"
+    "<stop offset='0' stop-color='#43a047'/><stop offset='1' stop-color='#2e7d32'/>"
+    "</linearGradient></defs>"
+    "<path d='M6 8a4 4 0 0 1 4-4h16l8 8v24a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4z' fill='url(#g)'/>"
+    "<path d='M26 4l8 8h-8z' fill='#fff' opacity='.35'/>"
+    "<g stroke='#fff' stroke-width='2.4' stroke-linecap='round' opacity='.9'>"
+    "<line x1='11' y1='15' x2='22' y2='15'/><line x1='11' y1='21' x2='20' y2='21'/></g>"
+    "<g stroke='#8bc34a' stroke-width='2.6' stroke-linecap='round'>"
+    "<line x1='20' y1='31' x2='30' y2='24'/><line x1='20' y1='31' x2='31' y2='34'/></g>"
+    "<circle cx='20' cy='31' r='4' fill='#fff'/>"
+    "<circle cx='30' cy='24' r='3.5' fill='#1b5e20'/>"
+    "<circle cx='31' cy='34' r='4' fill='#8bc34a'/></svg>"
+).replace("#", "%23")
+
+_FAVICON_LINK = f'<link rel="icon" type="image/svg+xml" href="{_FAVICON}">'
 
 
 def _backup_time(name: str) -> str:
@@ -394,9 +417,11 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
         else:
             control_forms = ""
         backup_forms = _card_backup(e, project_backups.get(p, []))
-        forms = control_forms + refresh_form + rename_form + backup_forms + delete_form
+        # Pause/Stop wandern zur Fortschrittszeile (thematisch bei der Ingest-Anzeige),
+        # nicht zwischen die Verwaltungsbuttons oben.
+        forms = refresh_form + rename_form + backup_forms + delete_form
         cls = "card" if has else "card todo"
-        progress = _progress_row(st) if live else ""
+        progress = _progress_row(st, control_forms) if live else ""
         flags = _flagged_section(p, flagged.get(p, {}))
         return (f'<div class="{cls}"><div class="cardhead"><div class="left">{left}</div>'
                 f'<div class="actions">{forms}</div></div>{progress}{flags}</div>')
@@ -412,6 +437,7 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 {'<meta http-equiv="refresh" content="5">' if running else ''}
 <title>doc-graph · Knowledge Graphs</title>
+{_FAVICON_LINK}
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -451,6 +477,7 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
   .del.danger button.ib:hover{{border-color:#dd3333;color:#dd3333;background:#fff5f5}}
   .prog .fill{{height:100%;background:var(--accent);border-radius:20px;transition:width .4s ease}}
   .prog .fill.paused{{background:#ffb300}}
+  .prog-ctl{{display:flex;gap:6px;flex-shrink:0}}
   .left{{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;min-width:0}}
   .nm{{font-weight:600;font-size:15px;color:var(--text);text-decoration:none}}
   a.nm.open:hover .go{{text-decoration:underline}}
@@ -531,6 +558,7 @@ def graph_html(title: str, projects: list[str] | None = None,
 <html lang="de"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{title}</title>
+{_FAVICON_LINK}
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="{_VIS_CDN}"></script>

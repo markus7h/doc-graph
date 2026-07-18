@@ -37,10 +37,18 @@ from graphview import (
 
 import numpy as np
 
+# Gleaning (LightRAGs "hast du was übersehen?"-Nachfassrunde) aus: verdoppelt
+# sonst die LLM-Calls pro Chunk für wenige Zusatz-Entitäten — auf der geteilten
+# GPU der halbe Ingest-Durchsatz. MUSS vor dem lightrag-Import stehen (die
+# Dataclass liest MAX_GLEANING beim Import). Via Compose-env überschreibbar.
+os.environ.setdefault("MAX_GLEANING", "0")
+
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import openai_complete_if_cache
 from lightrag.utils import EmbeddingFunc
 from lightrag.kg.shared_storage import initialize_pipeline_status, get_namespace_data
+
+from clauses import norm_clause, split_clauses
 
 # ----------------------------------------------------------------------------
 # Konfiguration
@@ -65,10 +73,12 @@ EMBED_TIMEOUT = int(os.environ.get("EMBED_TIMEOUT", "180"))
 # (niedriger t/s) reißen dichte Chunks den Default -> hier hochsetzen. Der
 # eigentliche Engpass bleibt der Throughput (GPU), das ist nur der Deckel.
 LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "480"))
-# Chunk-Größe (Tokens). 600 statt LightRAG-Default 1200: weniger Entitäten pro
-# Chunk -> kürzere Extraktion, beseitigt den 480s-Worker-Timeout bei dichten
-# Tabellen-/Listen-Docs (siehe INGEST-FAILURE-ANALYSE.md).
-CHUNK_TOKEN_SIZE = int(os.environ.get("CHUNK_TOKEN_SIZE", "600"))
+# Chunk-Größe (Tokens). Wieder LightRAG-Default 1200: der frühere 600er-Wert
+# war ein Workaround gegen 480s-Worker-Timeouts bei CPU-Offload-Extraktion
+# (siehe INGEST-FAILURE-ANALYSE.md) — mit Voll-GPU-qwen + Output-Deckel (-n)
+# obsolet. Größere Chunks = halb so viele Extraktions-Calls (der ~3-4k-Token-
+# Prompt-Overhead fällt PRO Chunk an). Wirkt nur auf neu indexierte Docs.
+CHUNK_TOKEN_SIZE = int(os.environ.get("CHUNK_TOKEN_SIZE", "1200"))
 # Sicherheits-Guard: Dokumente über dieser Textlänge (Zeichen) werden NICHT
 # ingestiert, sondern geflaggt (ingest_flagged.json) und dem Nutzer zur Prüfung
 # vorgelegt. Schützt vor Datenmüll wie einem 50-MB-CSV-Export, der zehntausende
@@ -215,6 +225,87 @@ def _save_meta(project_id: str, meta: dict) -> None:
     _meta_path(project_id).write_text(json.dumps(meta, indent=1, ensure_ascii=False))
 
 
+# ----------------------------------------------------------------------------
+# Regelwerk-Projekte: klauselweises Chunking + deterministischer Klausel-Store
+# ----------------------------------------------------------------------------
+# clauses.json pro Projekt: doc_key -> {doc_title, clauses: {clause_id -> {title, text}}}.
+# Geschrieben beim Ingest mit regelwerk=True, gelesen von get_clause — exakter
+# Wortlaut ohne LLM/Retrieval, damit Klausel-Zitate nachprüfbar sind.
+def _clauses_path(project: str) -> Path:
+    return PROJECTS_DIR / project / "clauses.json"
+
+
+def _load_clauses(project: str) -> dict:
+    p = _clauses_path(project)
+    return json.loads(p.read_text()) if p.exists() else {}
+
+
+def _save_clauses(project: str, store: dict) -> None:
+    _clauses_path(project).write_text(json.dumps(store, indent=1, ensure_ascii=False))
+
+
+def _clause_entry(doc_title: str, content: str) -> dict | None:
+    """clauses.json-Eintrag für ein Dokument oder None (keine Klausel-Struktur)."""
+    _pre, cls = split_clauses(content or "")
+    if not cls:
+        return None
+    out: dict = {}
+    for c in cls:
+        cid = c["clause_id"]
+        n = 2
+        while cid in out:  # ponytail: doppelte §-Nummern (mehrere Werke in einem PDF) -> Suffix
+            cid = f"{c['clause_id']} ({n})"
+            n += 1
+        out[cid] = {"title": c["title"], "text": c["text"]}
+    return {"doc_title": doc_title, "clauses": out}
+
+
+def _regelwerk_chunking(tokenizer, content, split_by_character=None,
+                        split_by_character_only=False,
+                        chunk_overlap_token_size=100, chunk_token_size=1200):
+    """Chunking für Regelwerk-Projekte: ein Chunk = eine Klausel (+ Präambel als
+    eigener Chunk). Docs ohne Klausel-Struktur (Anschreiben etc.) fallen aufs
+    Standard-Token-Chunking zurück. Legacy-6-Arg-Signatur von LightRAG."""
+    from lightrag.chunker import chunking_by_token_size
+
+    preamble, cls = split_clauses(content)
+    if not cls:
+        return chunking_by_token_size(tokenizer, content, split_by_character,
+                                      split_by_character_only,
+                                      chunk_overlap_token_size, chunk_token_size)
+    chunks: list[dict] = []
+
+    def _add(text: str) -> None:
+        toks = len(tokenizer.encode(text))
+        if toks > chunk_token_size * 2:
+            # überlange "Klausel" (z.B. Tabellenanhang) mit dem Standard-Chunker nachsplitten
+            for s in chunking_by_token_size(tokenizer, text, None, False,
+                                            chunk_overlap_token_size, chunk_token_size):
+                chunks.append({"tokens": s["tokens"], "content": s["content"],
+                               "chunk_order_index": len(chunks)})
+        else:
+            chunks.append({"tokens": toks, "content": text,
+                           "chunk_order_index": len(chunks)})
+
+    if preamble:
+        _add(preamble)
+    for c in cls:
+        _add(c["text"])
+    return chunks
+
+
+def _ensure_regelwerk(project_id: str) -> None:
+    """regelwerk-Flag in meta.json setzen — VOR get_rag, damit die LightRAG-
+    Instanz mit Klausel-Chunking gebaut wird. Eine evtl. schon ohne Flag
+    gebaute Instanz fliegt aus dem Cache."""
+    (PROJECTS_DIR / project_id).mkdir(parents=True, exist_ok=True)
+    meta = _load_meta(project_id)
+    if not meta.get("regelwerk"):
+        meta["regelwerk"] = True
+        _save_meta(project_id, meta)
+        _instances.pop(project_id, None)
+
+
 def _validate_project(project: str) -> str:
     if not PROJECT_RE.match(project):
         raise ValueError(
@@ -235,6 +326,11 @@ async def get_rag(project: str) -> LightRAG:
         working_dir = PROJECTS_DIR / project
         working_dir.mkdir(parents=True, exist_ok=True)
 
+        # Regelwerk-Projekte (Flag in meta.json): ein Chunk = eine Klausel.
+        extra = (
+            {"chunking_func": _regelwerk_chunking}
+            if _load_meta(project).get("regelwerk") else {}
+        )
         rag = LightRAG(
             working_dir=str(working_dir),
             llm_model_func=_llm_model_func,
@@ -250,6 +346,7 @@ async def get_rag(project: str) -> LightRAG:
                 max_token_size=8192,
                 func=_embed_func,
             ),
+            **extra,
         )
         await rag.initialize_storages()
         await initialize_pipeline_status()
@@ -483,6 +580,7 @@ async def ingest_paperless(
     document_type: str = "",
     correspondent: str = "",
     query_text: str = "",
+    regelwerk: bool = False,
 ) -> str:
     """Indexiert Paperless-Dokumente in den Knowledge Graph des Projekts.
     Bereits indexierte, unveränderte Dokumente werden übersprungen.
@@ -495,6 +593,9 @@ async def ingest_paperless(
         document_type: Dokumenttyp-Name.
         correspondent: Korrespondent-Name.
         query_text: Freitext-Suche (Paperless-Volltextsuche).
+        regelwerk: True für Bedingungswerke/Verträge (AVB, Leistungspläne):
+              klauselweises Chunking (ein Chunk = ein §) + Klausel-Store für
+              get_clause. Das Flag bleibt am Projekt haften (meta.json).
     """
     params: dict = {"fields": "id,title,created,content,correspondent,document_type,tags,archive_serial_number"}
     if tag:
@@ -507,6 +608,12 @@ async def ingest_paperless(
         params["query"] = query_text
     if len(params) == 1:
         return "Fehler: mindestens einen Filter angeben (tag/document_type/correspondent/query_text)."
+
+    project_id = _validate_project(project_id)
+    if regelwerk:
+        _ensure_regelwerk(project_id)  # vor get_rag, sonst chunkt die Instanz normal
+    is_regelwerk = regelwerk or _load_meta(project_id).get("regelwerk", False)
+    clause_store = _load_clauses(project_id) if is_regelwerk else {}
 
     rag = await get_rag(project_id)
     manifest = _load_manifest(project_id)
@@ -535,6 +642,12 @@ async def ingest_paperless(
                 doctype_name=doctype_map.get(doc.get("document_type")),
             )
             h = _hash(text)
+            # Klausel-Store immer aktualisieren (auch für unveränderte Docs) —
+            # heilt Projekte, die vor dem regelwerk-Feature ingestiert wurden.
+            if is_regelwerk:
+                entry = _clause_entry(doc.get("title") or doc_key, doc.get("content") or "")
+                if entry:
+                    clause_store[doc_key] = entry
             if manifest.get(doc_key) == h:
                 skipped += 1
                 continue
@@ -570,6 +683,8 @@ async def ingest_paperless(
             pending.append((doc_key, text, h))
 
     _save_flagged(project_id, flagged)
+    if is_regelwerk and clause_store:
+        _save_clauses(project_id, clause_store)
 
     _open_flags = sum(1 for v in flagged.values() if v.get("decision", "open") == "open")
     flag_note = (
@@ -625,9 +740,16 @@ async def ingest_paperless(
             # kontrolliert ab; das finally swappt zurück.
             await _swap_begin()
             swapped = True
-            for doc_key, text, h in pending:
-                # Pause/Stop kooperativ ZWISCHEN zwei Dokumenten — das laufende
-                # Doc wird fertig, Manifest ist je Doc gesichert (kein Datenverlust).
+            def _final(state):  # Endstatus mit aktuellem Zähler (done wird live gelesen)
+                return {"state": state, "done": done, "total": total, "new": new,
+                        "updated": updated, "skipped": skipped, "at": _now()}
+
+            stopped = False
+            i = 0
+            while i < len(pending):
+                doc_key, text, h = pending[i]
+                # Pause hält hier; ein mittendrin gecanceltes Doc wird nach dem
+                # Fortsetzen KOMPLETT neu verarbeitet (nicht als fertig gezählt).
                 while _ingest_control.get(project_id) == "pause":
                     if swapped:  # GPU freigeben: mistral zurück für paperless-ai
                         await _swap_end()
@@ -635,17 +757,42 @@ async def ingest_paperless(
                     _ingest_status[project_id]["state"] = "paused"
                     await asyncio.sleep(1)
                 if _ingest_control.get(project_id) == "stop":
-                    _ingest_status[project_id] = {
-                        "state": "stopped", "done": done, "total": total, "new": new,
-                        "updated": updated, "skipped": skipped, "at": _now(),
-                    }
+                    _ingest_status[project_id] = _final("stopped")
+                    stopped = True
                     break
-                if not swapped:  # Resume nach Pause: qwen wieder laden
+                if not swapped:  # erster Lauf / Resume nach Pause: qwen laden
                     await _swap_begin()
                     swapped = True
                     _ingest_status[project_id]["state"] = "running"
+                # Insert als eigener Task, damit Stop/Pause ihn SOFORT (mitten im
+                # Dokument) canceln. Stop: akzeptierter Teil-Schreibvorgang.
+                # Pause: dasselbe Doc wird nach Resume neu inserted (ids=[doc_key]
+                # idempotent, überschreibt den Teilstand).
+                # ponytail: hartes cancel() eines ainsert — hinterlässt evtl.
+                # LightRAG-internen Teilzustand; Ceiling: hängt ein Folge-Insert,
+                # bräuchte es einen pipeline_status-Reset nach Cancel.
+                interrupted = None
                 async with _insert_lock:
-                    await rag.ainsert([text], ids=[doc_key])
+                    ins = asyncio.create_task(rag.ainsert([text], ids=[doc_key]))
+                    while True:
+                        finished, _ = await asyncio.wait({ins}, timeout=0.3)
+                        if ins in finished:
+                            ins.result()  # reguläres Ende / Fehler weiterreichen
+                            break
+                        if _ingest_control.get(project_id) in ("stop", "pause"):
+                            interrupted = _ingest_control.get(project_id)
+                            ins.cancel()
+                            try:
+                                await ins
+                            except asyncio.CancelledError:
+                                pass
+                            break
+                if interrupted == "pause":
+                    continue  # Doc nicht zählen -> nach Resume neu verarbeiten
+                if interrupted == "stop":
+                    _ingest_status[project_id] = _final("stopped")
+                    stopped = True
+                    break
                 # Guard: Hash nur ins Manifest, wenn LightRAG das Doc wirklich
                 # verarbeitet hat — sonst holt der nächste Ingest es nach.
                 if _doc_state(project_id, doc_key) == "processed":
@@ -655,12 +802,9 @@ async def ingest_paperless(
                     log.warning("Doc %s nicht 'processed' nach ainsert — bleibt für Re-Ingest offen", doc_key)
                 done += 1
                 _ingest_status[project_id]["done"] = done  # in-place: Poller-Feld bleibt
-            else:
-                # for..else: nur wenn NICHT via break gestoppt -> regulär fertig.
-                _ingest_status[project_id] = {
-                    "state": "done", "done": done, "total": total, "new": new,
-                    "updated": updated, "skipped": skipped, "at": _now(),
-                }
+                i += 1
+            if not stopped:
+                _ingest_status[project_id] = _final("done")
         except Exception as e:  # noqa: BLE001 — Status festhalten, nicht crashen
             log.exception("Ingest fehlgeschlagen für %s", project_id)
             _ingest_status[project_id] = {
@@ -751,7 +895,7 @@ def _extract_text(f: Path) -> str | None:
 
 
 @mcp.tool()
-async def ingest_directory(project_id: str, subpath: str = "") -> str:
+async def ingest_directory(project_id: str, subpath: str = "", regelwerk: bool = False) -> str:
     """Indexiert lokale Dateien (.txt, .md, .pdf) aus /data/inputs/<subpath>
     in den Knowledge Graph. PDFs werden per pdftotext extrahiert (kein OCR —
     für gescannte Bilder Paperless als Quelle nutzen).
@@ -759,6 +903,8 @@ async def ingest_directory(project_id: str, subpath: str = "") -> str:
     Args:
         project_id: technischer Projekt-Schlüssel.
         subpath: Unterverzeichnis relativ zum gemounteten inputs-Volume.
+        regelwerk: True für Bedingungswerke/Verträge — klauselweises Chunking
+              + Klausel-Store für get_clause (Flag haftet am Projekt, meta.json).
     """
     base = (INPUTS_DIR / subpath).resolve()
     if not str(base).startswith(str(INPUTS_DIR)):
@@ -768,6 +914,12 @@ async def ingest_directory(project_id: str, subpath: str = "") -> str:
             f"Fehler: {base} existiert nicht. inputs-Volume im docker-compose.yml "
             f"einkommentieren (- /host/pfad:/data/inputs:ro) und Container neu starten."
         )
+
+    project_id = _validate_project(project_id)
+    if regelwerk:
+        _ensure_regelwerk(project_id)  # vor get_rag, sonst chunkt die Instanz normal
+    is_regelwerk = regelwerk or _load_meta(project_id).get("regelwerk", False)
+    clause_store = _load_clauses(project_id) if is_regelwerk else {}
 
     rag = await get_rag(project_id)
     manifest = _load_manifest(project_id)
@@ -783,6 +935,11 @@ async def ingest_directory(project_id: str, subpath: str = "") -> str:
         text = f"Dokument: {f.name}\n\n" + content
         doc_key = f"file:{f.relative_to(INPUTS_DIR)}"
         h = _hash(text)
+        # Klausel-Store immer aktualisieren (auch unverändert) — heilt Alt-Ingests.
+        if is_regelwerk:
+            entry = _clause_entry(f.name, content)
+            if entry:
+                clause_store[doc_key] = entry
         if manifest.get(doc_key) == h:
             skipped += 1
             continue
@@ -790,6 +947,9 @@ async def ingest_directory(project_id: str, subpath: str = "") -> str:
         texts.append(text)
         ids.append(doc_key)
         new += 1
+
+    if is_regelwerk and clause_store:
+        _save_clauses(project_id, clause_store)
 
     if texts:
         # ponytail: synchron -> der MCP-Call blockt, während qwen lädt (~min).
@@ -830,6 +990,43 @@ async def get_entity(project_id: str, entity_name: str) -> str:
         param=QueryParam(mode="local"),
     )
     return str(result)
+
+
+@mcp.tool()
+async def get_clause(project_id: str, clause: str, document: str = "") -> str:
+    """Exakter Wortlaut einer Klausel aus einem Regelwerk-Projekt — deterministisch
+    aus dem Klausel-Store (kein LLM, kein Retrieval; zitierfähig und nachprüfbar).
+
+    Args:
+        project_id: technischer Projekt-Schlüssel (mit regelwerk=True ingestiert).
+        clause: Klausel-Referenz, tolerant: '§ 2', '§2', '2', 'Artikel 3', 'Ziffer 4'.
+        document: optionaler Substring-Filter auf den Dokumenttitel (wenn dieselbe
+              §-Nummer in mehreren Bedingungswerken vorkommt).
+    """
+    project_id = _validate_project(project_id)
+    store = _load_clauses(project_id)
+    if not store:
+        return (
+            f"Projekt '{project_id}': kein Klausel-Store vorhanden — Projekt mit "
+            f"regelwerk=True ingesten (ingest_paperless/ingest_directory)."
+        )
+    want_kind, want_num = norm_clause(clause)
+    hits, available = [], []
+    for doc_key, entry in sorted(store.items()):
+        title = entry.get("doc_title", doc_key)
+        if document and document.lower() not in title.lower():
+            continue
+        for cid, c in entry.get("clauses", {}).items():
+            label = f"{cid} {c['title']}".strip() if c.get("title") else cid
+            available.append(f"{title}: {label}")
+            kind, num = norm_clause(cid)
+            if num == want_num and (want_kind is None or kind == want_kind):
+                hits.append(f"— {title} — {label}\n{c['text']}")
+    if hits:
+        return "\n\n".join(hits)
+    if not available:
+        return f"Kein Dokument passt auf document='{document}'."
+    return f"Klausel '{clause}' nicht gefunden. Verfügbar:\n" + "\n".join(available)
 
 
 def _get_project_name(project_id: str) -> str:
@@ -945,6 +1142,8 @@ def _delete_project_dir(project: str) -> bool:
     True, wenn etwas gelöscht wurde. Validiert gegen Path-Traversal."""
     _validate_project(project)
     _instances.pop(project, None)
+    _ingest_status.pop(project, None)  # sonst bleibt eine Phantom-Karte bis zum Neustart
+    _ingest_control.pop(project, None)  # altes stop/pause-Flag würde ein neues gleichnamiges Projekt treffen
     target = PROJECTS_DIR / project
     if target.exists():
         shutil.rmtree(target)
