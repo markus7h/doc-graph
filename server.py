@@ -705,8 +705,33 @@ async def _run_ingest(project_id: str, rag, pending: list, counts: dict, manifes
             batch = pending[i:i + INGEST_BATCH]
             keys = [k for k, _t, _h in batch]
             texts = [t for _k, t, _h in batch]
+            # Insert als eigener Task, damit Stop/Pause ihn SOFORT (mitten im Batch)
+            # canceln — sonst greift Stop erst nach dem Batch, bei großen Docs Minuten.
+            # ponytail: hartes cancel() eines ainsert kann LightRAG-Teilzustand
+            # hinterlassen; der _doc_states-Guard unten schützt das Manifest — ein
+            # gecanceltes Doc bleibt 'nicht processed' und wird beim Re-Ingest neu geholt.
+            interrupted = None
             async with _insert_lock:
-                await rag.ainsert(texts, ids=keys)
+                ins = asyncio.create_task(rag.ainsert(texts, ids=keys))
+                while True:
+                    finished, _ = await asyncio.wait({ins}, timeout=0.3)
+                    if ins in finished:
+                        ins.result()  # reguläres Ende / Fehler weiterreichen
+                        break
+                    if _ingest_control.get(project_id) in ("stop", "pause"):
+                        interrupted = _ingest_control.get(project_id)
+                        ins.cancel()
+                        try:
+                            await ins
+                        except asyncio.CancelledError:
+                            pass
+                        break
+            if interrupted == "pause":
+                continue  # Batch nicht zählen -> Pause-Schleife oben hält, danach neu
+            if interrupted == "stop":
+                _ingest_status[project_id] = _final("stopped")
+                stopped = True
+                break
             # Guard: nur wirklich 'processed' Docs ins Manifest (ein Read je Batch).
             states = _doc_states(project_id, keys)
             wrote = False
@@ -1166,6 +1191,45 @@ async def rename_project(project_id: str, project_name: str) -> str:
     meta["project_name"] = project_name
     _save_meta(project_id, meta)
     return f"Projekt '{project_id}': Anzeigename gesetzt auf '{project_name}'."
+
+
+@mcp.tool()
+async def delete_documents(project_id: str, doc_keys: list[str] | None = None,
+                           only_failed: bool = False) -> str:
+    """Entfernt einzelne Dokumente aus dem Graph-Index (Chunks, Entitäten, Vektoren,
+    doc_status) via LightRAGs adelete_by_doc_id. Zum Aufräumen von dup-Leichen oder
+    Artefakt-Failures, die der Oversized-Guard (_purge_stuck_oversized) nicht erfasst.
+    Das Quelldokument (Paperless) bleibt unberührt.
+
+    Args:
+        project_id: technischer Projekt-Schlüssel (siehe list_projects).
+        doc_keys: doc_status-Schlüssel, z.B. ["paperless:4193", "dup-ab12…"].
+        only_failed: statt doc_keys ALLE Dokumente mit status=='failed' löschen.
+    """
+    project_id = _validate_project(project_id)
+    if not (PROJECTS_DIR / project_id).exists():
+        return f"Projekt '{project_id}' existiert nicht."
+    if only_failed:
+        p = PROJECTS_DIR / project_id / "kv_store_doc_status.json"
+        data = json.loads(p.read_text()) if p.exists() else {}
+        doc_keys = [k for k, v in data.items() if v.get("status") == "failed"]
+    doc_keys = doc_keys or []
+    if not doc_keys:
+        return "Nichts zu löschen (keine doc_keys angegeben bzw. keine failed-Docs)."
+    rag = await get_rag(project_id)
+    deleted, errored = 0, []
+    for k in doc_keys:
+        try:
+            async with _insert_lock:
+                await rag.adelete_by_doc_id(k)
+            deleted += 1
+        except Exception as e:  # noqa: BLE001 — pro Key tolerant, Rest weiterlöschen
+            log.warning("delete_documents: %s fehlgeschlagen: %s", k, e)
+            errored.append(k)
+    msg = f"Projekt '{project_id}': {deleted}/{len(doc_keys)} Dokument(e) gelöscht"
+    if errored:
+        msg += f", {len(errored)} fehlgeschlagen ({', '.join(errored[:5])}…)"
+    return msg + ". Quelldokumente unberührt."
 
 
 @mcp.tool()
@@ -1659,11 +1723,14 @@ if __name__ == "__main__":
     if SWAP_ENABLED:
         try:
             r = subprocess.run(
-                ["docker", "ps", "-q", "-f", "name=^llm-qwen$", "-f", "status=running"],
+                # name-Filter sind OR, status ist AND: qwen ODER embed-gpu läuft noch.
+                # Deckt auch den Restspalt "nur embed-gpu verwaist, qwen schon aus".
+                ["docker", "ps", "-q", "-f", "name=^llm-qwen$",
+                 "-f", "name=^llm-embed-gpu$", "-f", "status=running"],
                 capture_output=True, text=True, timeout=30,
             )
             if r.stdout.strip():
-                log.warning("qwen-Container aus früherem Ingest aktiv — swappe zurück auf mistral")
+                log.warning("Swap-Container (qwen/embed-gpu) aus früherem Ingest aktiv — swappe zurück auf mistral")
                 _run_swap("swap-to-mistral.sh")
         except Exception:  # noqa: BLE001 — best effort, Start nicht blockieren
             log.exception("Startup-Swap-Cleanup fehlgeschlagen")

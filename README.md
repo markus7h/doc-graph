@@ -258,13 +258,14 @@ docker compose -f /var/local/mydocker/doc-graph/docker-compose.yml up -d
 | `list_projects()` | Projekte + Dokumentzahl (zeigt project_id, optional Anzeigename in Klammern) |
 | `ingest_paperless(project_id, tag/document_type/correspondent/query_text, regelwerk)` | Delta-Indexierung aus Paperless (Hash-Manifest, nur Neues/Geändertes) — Extraktion läuft im Hintergrund, das Tool kehrt sofort zurück. `regelwerk=True` für Bedingungswerke/Verträge (siehe unten) |
 | `ingest_status(project_id)` | Fortschritt/Ergebnis des laufenden bzw. letzten Ingest-Laufs. Feld `docs` zeigt die **echten** LightRAG-Zustände (`processed`/`processing`/`pending`/`failed`) — nur `processed` heißt wirklich im Graph; `state:done` heißt nur „Dispatch fertig" |
-| `ingest_control(project_id, action)` | Steuert einen laufenden Ingest: `pause` (hält nach dem aktuellen Batch und gibt die GPU frei → mistral zurück für paperless-ai), `resume` (lädt qwen neu, macht beim nächsten Batch weiter), `stop` (hält nach dem aktuellen Batch, bereits fertig Indexiertes bleibt) |
+| `ingest_control(project_id, action)` | Steuert einen laufenden Ingest: `pause` (gibt die GPU frei → mistral zurück für paperless-ai), `resume` (lädt qwen neu, macht weiter), `stop` (bricht ab, bereits fertig Indexiertes bleibt). `stop`/`pause` wirken **sofort** — der laufende `ainsert` wird mitten im Batch abgebrochen; das abgebrochene Doc wird beim Re-Ingest neu geholt |
 | `ingest_directory(project_id, subpath, regelwerk)` | .txt/.md/.pdf aus gemountetem Verzeichnis (PDF via pdftotext, kein OCR — gescannte Bilder über Paperless). Läuft wie `ingest_paperless` im Hintergrund (steuerbar via `ingest_control`/`ingest_status`) und kehrt sofort zurück |
 | `query(project_id, question, mode, only_context, max_total_tokens)` | Abfrage: local / global / hybrid / mix / naive. `only_context` ist **default True** (Claude formuliert aus dem Kontext); die lokale LLM-Formulierung ist auf geteilter GPU zu langsam. `max_total_tokens` (default 12000) deckelt den Kontext, damit er das MCP-Token-Limit nicht sprengt |
 | `get_entity(project_id, entity_name)` | Alle Fakten/Relationen zu einer Entität |
 | `get_clause(project_id, clause, document)` | **Regelwerk-Projekte:** exakter Wortlaut einer Klausel (`'§ 2'`, `'§2'`, `'2'`, `'Artikel 3'`) — deterministisch aus dem Klausel-Store, kein LLM/Retrieval. `document` filtert per Substring auf den Dokumenttitel |
 | `graph_view(project_id)` | Interaktive HTML-Graphansicht, gibt Viewer-URL zurück |
 | `rename_project(project_id, project_name)` | Setzt den Anzeigenamen (display name) eines Projekts; der technische project_id bleibt unverändert |
+| `delete_documents(project_id, doc_keys, only_failed)` | Einzelne Dokumente aus dem Index entfernen (`adelete_by_doc_id`: Chunks/Entitäten/Vektoren/doc_status) — z.B. dup-Leichen oder Artefakt-Failures aufräumen. `only_failed=True` löscht alle `status==failed`. Quellen bleiben |
 | `delete_project(project_id, confirm)` | Index löschen (Quellen bleiben) |
 
 ### Regelwerk-Projekte
@@ -320,8 +321,12 @@ von „was behauptet die Gegenseite" (query auf dem Fall-Projekt).
   wird dabei NICHT mehr pausiert — es ist auf `llm-mistral` gepinnt und bekommt nie
   qwen-Antworten; seine UI zeigt während des Swaps „Modell offline".
   Paralleler Ingest über mehrere Projekte swappt per Refcount nur
-  einmal rein/raus; ein Crash mitten im Ingest wird beim nächsten Serverstart
-  zurückgeswappt. Inserts laufen global serialisiert (LightRAG-Instanzen teilen
+  einmal rein/raus; ein Crash/Deploy mitten im Ingest lässt qwen (bzw. den
+  GPU-Embedder) verwaist auf der GPU zurück — der **Startup-Reconcile** prüft beim
+  Serverstart, ob `llm-qwen` **oder** `llm-embed-gpu` noch läuft, und swappt zurück.
+  Der Rückweg `swap-to-mistral.sh` **wartet auf die VRAM-Freigabe**, bevor mistral
+  startet (sonst lädt mistral in belegtes VRAM → OOM-Crash-Loop, erlebt 2026-07-17).
+  Inserts laufen global serialisiert (LightRAG-Instanzen teilen
   den Pipeline-Lock — paralleles `ainsert` kehrt sonst unverarbeitet zurück), und
   ein Dokument gilt erst als indexiert, wenn LightRAG es wirklich `processed`
   meldet — sonst holt der nächste Ingest es automatisch nach.
