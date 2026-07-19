@@ -1,8 +1,10 @@
 """
 doc-graph — Knowledge-Graph-MCP-Server (LightRAG, ein Container, N Projekte).
 
-Pro Projekt existiert ein working_dir unter PROJECTS_DIR mit eigenem
-LightRAG-Store (Graph + Vektoren + KV). Instanzen werden lazy geladen.
+Pro Projekt liegt der LightRAG-Store (Graph + Vektoren + KV) unter
+PROJECTS_DIR/<project>/ — realisiert über LightRAGs workspace=<project> auf
+gemeinsamer working_dir-Wurzel, was zugleich den prozess-globalen shared_storage
+je Projekt isoliert (sonst Cross-Projekt-Duplikat-Dedup). Instanzen lazy geladen.
 Dokumentquelle ist primär Paperless-NGX (bereits OCR-ter Text via REST-API),
 alternativ lokale Textdateien (ingest_directory).
 
@@ -335,16 +337,25 @@ async def get_rag(project: str) -> LightRAG:
         if project in _instances:
             return _instances[project]
 
-        working_dir = PROJECTS_DIR / project
-        working_dir.mkdir(parents=True, exist_ok=True)
+        proj_dir = PROJECTS_DIR / project
+        proj_dir.mkdir(parents=True, exist_ok=True)
 
         # Regelwerk-Projekte (Flag in meta.json): ein Chunk = eine Klausel.
         extra = (
             {"chunking_func": _regelwerk_chunking}
             if _load_meta(project).get("regelwerk") else {}
         )
+        # workspace=project isoliert LightRAGs prozess-globalen shared_storage
+        # (doc_status/full_docs/pipeline_status) je Projekt. Ohne das teilen sich
+        # ALLE Projekte im selben Prozess den Default-Namespace "" -> ein Doc, das
+        # schon in Projekt A ingestiert wurde, wird in Projekt B fälschlich als
+        # Duplikat (filename/content_hash) still verworfen. working_dir bleibt die
+        # PROJECTS_DIR-Wurzel: LightRAG legt seine Stores unter working_dir/<workspace>/
+        # = PROJECTS_DIR/<project>/ ab — identisch zum bisherigen On-Disk-Layout,
+        # daher keine Migration bestehender Indizes nötig.
         rag = LightRAG(
-            working_dir=str(working_dir),
+            working_dir=str(PROJECTS_DIR),
+            workspace=project,
             llm_model_func=_llm_model_func,
             llm_model_name=LLM_MODEL,
             llm_model_max_async=MAX_ASYNC,
@@ -361,9 +372,9 @@ async def get_rag(project: str) -> LightRAG:
             **extra,
         )
         await rag.initialize_storages()
-        await initialize_pipeline_status()
+        await initialize_pipeline_status(workspace=project)
         _instances[project] = rag
-        log.info("LightRAG-Instanz für Projekt '%s' initialisiert (%s)", project, working_dir)
+        log.info("LightRAG-Instanz für Projekt '%s' initialisiert (%s)", project, proj_dir)
         return rag
 
 
@@ -638,7 +649,7 @@ async def _poll_ingest_msg(project_id: str, stop: asyncio.Event):
     # ponytail: kooperatives asyncio -> läuft nie echt parallel zum Insert, kein Lock.
     while not stop.is_set():
         try:
-            ps = await get_namespace_data("pipeline_status")
+            ps = await get_namespace_data("pipeline_status", workspace=project_id)
             st = _ingest_status.get(project_id)
             if st and st.get("state") == "running":
                 st["msg"] = str(ps.get("latest_message") or "")[:160]

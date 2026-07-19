@@ -23,8 +23,12 @@ doc-graph
 Bewusste Entscheidung: **LightRAG als Library, nicht als LightRAG-Server.**
 Der offizielle LightRAG-Server bindet einen Workspace fest pro Prozess —
 Multi-Projekt hieße dort ein Container pro Projekt. Hier verwaltet der
-MCP-Server stattdessen selbst eine lazy geladene LightRAG-Instanz pro
-`working_dir`, Projektname ist einfach ein Tool-Parameter.
+MCP-Server stattdessen selbst eine lazy geladene LightRAG-Instanz pro Projekt,
+jede mit eigenem `workspace=<project>` (Store unter `PROJECTS_DIR/<project>/`).
+Der Projektname ist einfach ein Tool-Parameter. Der eigene Workspace ist dabei
+nicht nur Kosmetik: LightRAGs `shared_storage` (doc_status/full_docs) ist
+prozess-global und nur nach Workspace getrennt — ohne ihn würde ein Dokument,
+das schon in Projekt A liegt, in Projekt B still als Duplikat verworfen.
 
 ## Modell: geteilter llm-stack
 
