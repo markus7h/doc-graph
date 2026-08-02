@@ -12,11 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils \
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-# docker-CLI (nur Client) für den GPU-Swap: server.py ruft swap-to-*.sh, die
-# über den gemounteten Docker-Socket llm-mistral/llm-qwen (llm-stack) steuern.
-COPY --from=docker:cli /usr/local/bin/docker /usr/local/bin/docker
-
-COPY server.py graphview.py clauses.py swap-to-qwen.sh swap-to-mistral.sh test_backup.py ./
+COPY server.py graphview.py clauses.py ingest-begin.sh ingest-end.sh test_backup.py ./
 
 # Tiktoken-Cache vorab laden, damit der Container offline lauffähig ist
 RUN python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')" || true
