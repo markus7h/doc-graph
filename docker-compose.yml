@@ -7,12 +7,11 @@ services:
       - "5775:5775"   # MCP (streamable HTTP)
       - "5776:5776"   # Graph-Viewer (statisches HTML)
     environment:
-      # --- LLM: llm-stack (OpenAI-kompatibel). Extraktion (Ingest) läuft über
-      # qwen@myai (dauerhaft, docker-compose.myai.yml im Repo llm-stack);
-      # ingest-begin.sh weckt myai vorher per WoL. Antworten auf Queries liefert
-      # ohnehin meist Claude via only_context. Kontext server-seitig gesetzt (-c). ---
-      LLM_BASE_URL: ${LLM_BASE_URL:-http://llm:11434/v1}
-      LLM_MODEL: ${LLM_MODEL:-mistral-small3.2:24b}
+      # --- LLM: qwen3-14B dauerhaft auf myai (llm-stack, docker-compose.myai.yml),
+      # für Ingest UND Query — ingest-begin.sh weckt myai vor dem Ingest per WoL.
+      # Antworten auf Queries liefert ohnehin meist Claude via only_context. ---
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://myai:11436/v1}
+      LLM_MODEL: ${LLM_MODEL:-qwen3:14b}
       # --- Embeddings: bge-m3 dauerhaft auf myais RTX 2060 (llm-stack) ---
       EMBED_BASE_URL: ${EMBED_BASE_URL:-http://myai:11435/v1}
       EMBED_MODEL: ${EMBED_MODEL:-bge-m3}
@@ -48,11 +47,3 @@ services:
       # Pfad an den Host anpassen und einkommentieren (Verzeichnis muss existieren,
       # sonst legt Docker es leer als root an); primäre Quelle bleibt Paperless.
       # - /home/markus/dokumente:/data/inputs:ro
-    networks:
-      # Geteiltes LLM-Netz (gehört dem llm-stack-Compose-Projekt): löst 'llm'
-      # (aktives Chat-Modell) und 'llm-embed' auf. 'paperless' (NGX) via LAN-DNS.
-      - llm-net
-
-networks:
-  llm-net:
-    external: true

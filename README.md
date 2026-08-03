@@ -32,14 +32,14 @@ das schon in Projekt A liegt, in Projekt B still als Duplikat verworfen.
 
 ## Modell: geteilter llm-stack
 
-Extraktion und Embeddings laufen über den **geteilten llm-stack** (eigenes
-Compose-Projekt, Repo `llm-stack`), seit dem myai-Split über zwei Hosts:
-Queries via Netz-Alias `llm` (`llm-mistral`/`mistral-small3.2:24b` auf
-myubuntu), Extraktion beim Ingest via `http://myai:11436` (`llm-qwen`/
-`qwen3-14b`, voll auf myais RTX 3070+2060) + Embeddings via `http://myai:11435`
-(`bge-m3`, 1024-dim, dauerhaft auf myais RTX 2060 — immer GPU-schnell, keine
-CPU-`Worker execution timeout`-Failures). myai darf schlafen: `ingest-begin.sh`
-weckt ihn per Wake-on-LAN vor jedem Ingest.
+LLM und Embeddings laufen über den **geteilten llm-stack** (eigenes
+Compose-Projekt, Repo `llm-stack`), seit dem myai-Split komplett auf myai:
+Extraktion UND Queries via `http://myai:11436` (`llm-qwen`/`qwen3-14b`, voll
+auf myais RTX 3070+2060; qwen-only nach A/B-Test 2026-08-03 — auf Augenhöhe
+bis besser als mistral bei deutschen Antworten) + Embeddings via
+`http://myai:11435` (`bge-m3`, 1024-dim, dauerhaft auf myais RTX 2060 — immer
+GPU-schnell, keine CPU-`Worker execution timeout`-Failures). myai darf
+schlafen: `ingest-begin.sh` weckt ihn per Wake-on-LAN vor jedem Ingest.
 
 Der frühere GPU-Swap auf myubuntu (nur EIN Chat-Modell in 16 GB, Wechsel per
 stop/start + Alias-Trick) ist damit obsolet — mistral läuft dort durchgehend.
