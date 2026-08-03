@@ -179,48 +179,46 @@ _ingest_control: dict[str, str] = {}
 _insert_lock = asyncio.Lock()
 
 # ----------------------------------------------------------------------------
-# GPU-Swap: für die Dauer eines Ingests qwen3-14b VOLL auf die GPU, mistral raus
-# (sonst nur Teil-GPU-Offload -> langsam/Timeouts). Beide sind Services im
-# llm-stack-Compose-Projekt mit geteiltem Netz-Alias 'llm' — LLM_BASE_URL bleibt
-# beim Wechsel unverändert. swap-to-*.sh liegen im Image und steuern via
-# gemountetem Docker-Socket llm-mistral/llm-qwen (stop/start, kein pause mehr:
-# paperless-ai ist auf llm-mistral gepinnt und bekommt nie qwen-Antworten).
-# Refcount unter Lock: paralleler Ingest über mehrere Projekte swappt EINMAL.
+# Ingest-Hooks: qwen + Embedder laufen dauerhaft auf myai (Repo llm-stack,
+# docker-compose.myai.yml). ingest-begin.sh weckt myai per Wake-on-LAN und
+# wartet auf beide Health-Endpoints; ingest-end.sh ist ein No-op. Der frühere
+# GPU-Swap auf myubuntu (mistral raus / qwen rein via Docker-Socket) ist mit
+# dem Split obsolet — mistral läuft dort durchgehend.
+# Refcount unter Lock: paralleler Ingest über mehrere Projekte weckt EINMAL.
 # ponytail: globaler Lock reicht — Ingests laufen selten und selten parallel.
-# INGEST_SWAP=0 schaltet den Swap ab (lokale Dev-Umgebung ohne Docker-Socket).
+# INGEST_SWAP=0 schaltet die Hooks ab (lokale Dev-Umgebung).
 SWAP_ENABLED = os.environ.get("INGEST_SWAP", "1") == "1"
 _swap_lock = asyncio.Lock()
 _active_ingests = 0
 
-def _run_swap(script: str) -> None:
+def _run_hook(script: str) -> None:
     p = Path(__file__).parent / script
     r = subprocess.run(["bash", str(p)], capture_output=True, text=True, timeout=1500)
     if r.returncode != 0:
         log.error("%s fehlgeschlagen (rc=%s): %s", script, r.returncode, (r.stderr or r.stdout)[-800:])
         raise RuntimeError(f"{script} rc={r.returncode}")
-    log.info("GPU-Swap: %s ok", script)
+    log.info("Ingest-Hook: %s ok", script)
 
 async def _swap_begin() -> None:
-    """Vor dem ersten parallelen Ingest zu qwen swappen (blockt bis qwen bereit)."""
+    """Vor dem ersten parallelen Ingest myai wecken (blockt bis qwen+embed bereit)."""
     global _active_ingests
     if not SWAP_ENABLED:
         return
     async with _swap_lock:
         _active_ingests += 1
         if _active_ingests == 1:
-            log.info("GPU-Swap: mistral raus, qwen laden…")
-            await asyncio.to_thread(_run_swap, "swap-to-qwen.sh")
+            log.info("Ingest-Hook: myai wecken…")
+            await asyncio.to_thread(_run_hook, "ingest-begin.sh")
 
 async def _swap_end() -> None:
-    """Nach dem letzten laufenden Ingest zurück zu mistral."""
+    """Nach dem letzten laufenden Ingest (No-op-Hook, siehe ingest-end.sh)."""
     global _active_ingests
     if not SWAP_ENABLED:
         return
     async with _swap_lock:
         _active_ingests = max(0, _active_ingests - 1)
         if _active_ingests == 0:
-            log.info("GPU-Swap: zurück auf mistral…")
-            await asyncio.to_thread(_run_swap, "swap-to-mistral.sh")
+            await asyncio.to_thread(_run_hook, "ingest-end.sh")
 
 
 # ponytail: Meta-Datei pro Projekt (project_name, etc.), analog Manifest-Pattern
@@ -659,16 +657,15 @@ async def _poll_ingest_msg(project_id: str, stop: asyncio.Event):
 
 
 async def _run_ingest(project_id: str, rag, pending: list, counts: dict, manifest: dict) -> None:
-    """Hintergrund-Insert für beide Ingest-Pfade: GPU-Swap, Pause/Stop, batchweises
-    ainsert + per-Batch Manifest-Guard. Batchgröße INGEST_BATCH (=1 -> pro Doc).
+    """Hintergrund-Insert für beide Ingest-Pfade: myai-Wake-Hook, Pause/Stop,
+    batchweises ainsert + per-Batch Manifest-Guard. Batchgröße INGEST_BATCH (=1 -> pro Doc).
     Pause/Stop greifen zwischen Batches; ein Batch wird immer ganz zu Ende geführt."""
     total = len(pending)
     done = 0
     stop = asyncio.Event()
     poller = asyncio.create_task(_poll_ingest_msg(project_id, stop))
     # ponytail-Invariante: swapped == genau ein offenes _swap_begin. Jeder begin
-    # bekommt sein _swap_end (Pause/finally), sonst leckt der Refcount und die GPU
-    # bleibt bei qwen hängen.
+    # bekommt sein _swap_end (Pause/finally), sonst leckt der Refcount.
     swapped = False
 
     def _final(state):  # Endstatus mit aktuellem Zähler (done wird live gelesen)
@@ -679,14 +676,14 @@ async def _run_ingest(project_id: str, rag, pending: list, counts: dict, manifes
         # Altlasten-Guard vor dem ersten ainsert: hängende übergroße Docs raus,
         # sonst zieht LightRAG sie automatisch wieder in die Verarbeitung.
         await _purge_stuck_oversized(project_id, rag)
-        # Swap im Hintergrund-Task (nicht im MCP-Handler) -> kein MCP-Timeout,
-        # während qwen lädt. Bei Swap-Fehler bricht der Ingest ab; finally swappt zurück.
+        # Wake-Hook im Hintergrund-Task (nicht im MCP-Handler) -> kein MCP-Timeout,
+        # während myai bootet/qwen lädt. Bei Hook-Fehler bricht der Ingest ab.
         await _swap_begin()
         swapped = True
         stopped = False
         i = 0
         while i < len(pending):
-            # Pause hält zwischen Batches und gibt die GPU frei (mistral zurück).
+            # Pause hält zwischen Batches (Hook-Refcount wird sauber geschlossen).
             while _ingest_control.get(project_id) == "pause":
                 if swapped:
                     await _swap_end()
@@ -901,9 +898,8 @@ async def ingest_status(project_id: str) -> str:
 async def ingest_control(project_id: str, action: str) -> str:
     """Steuert einen laufenden ingest_paperless-Lauf.
 
-    'pause' hält nach dem aktuellen Batch an und gibt die GPU frei (mistral
-    zurück für paperless-ai). 'resume' lädt qwen neu und macht weiter. 'stop'
-    bricht ab — bereits Indexiertes bleibt im Graph.
+    'pause' hält nach dem aktuellen Batch an. 'resume' macht weiter (weckt
+    myai bei Bedarf neu). 'stop' bricht ab — bereits Indexiertes bleibt im Graph.
 
     Args:
         project_id: technischer Projekt-Schlüssel.
@@ -1715,24 +1711,5 @@ if __name__ == "__main__":
     _start_viewer_server()
     threading.Thread(target=_backup_scheduler, daemon=True, name="backup-scheduler").start()
     log.info("Backup-Scheduler läuft (Ziel=%s, max=%s)", BACKUP_DIR, MAX_BACKUPS)
-
-    # Safety-Net: hat ein Crash mitten im Ingest qwen geladen gelassen (finally
-    # lief nicht), bliebe mistral gestoppt und paperless-ai ohne LLM. Beim Start
-    # prüfen und zurückswappen. llm-qwen EXISTIERT immer als gestoppter Container
-    # (llm-stack legt ihn an) — daher explizit auf status=running filtern.
-    if SWAP_ENABLED:
-        try:
-            r = subprocess.run(
-                # name-Filter sind OR, status ist AND: qwen ODER embed-gpu läuft noch.
-                # Deckt auch den Restspalt "nur embed-gpu verwaist, qwen schon aus".
-                ["docker", "ps", "-q", "-f", "name=^llm-qwen$",
-                 "-f", "name=^llm-embed-gpu$", "-f", "status=running"],
-                capture_output=True, text=True, timeout=30,
-            )
-            if r.stdout.strip():
-                log.warning("Swap-Container (qwen/embed-gpu) aus früherem Ingest aktiv — swappe zurück auf mistral")
-                _run_swap("swap-to-mistral.sh")
-        except Exception:  # noqa: BLE001 — best effort, Start nicht blockieren
-            log.exception("Startup-Swap-Cleanup fehlgeschlagen")
 
     mcp.run(transport="streamable-http")

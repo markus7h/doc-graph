@@ -32,30 +32,28 @@ das schon in Projekt A liegt, in Projekt B still als Duplikat verworfen.
 
 ## Modell: geteilter llm-stack
 
-Extraktion und Embeddings laufen über den **geteilten llm-stack** (eigenes
-Compose-Projekt, Repo `llm-stack`): Extraktion via Netz-Alias `llm` (zeigt auf
-das aktive Chat-Modell — Normalbetrieb `llm-mistral`/`mistral-small3.2:24b`,
-während des Ingests `llm-qwen`/`qwen3-14b`) + Embeddings via Netz-Alias `embed`
-(`bge-m3`, 1024-dim). Der Embedder swappt mit: Normalbetrieb `llm-embed` (CPU),
-während des Ingests `llm-embed-gpu` (voll auf die GPU neben qwen) — Chunk-
-Embeddings ~10–50× schneller, keine CPU-`Worker execution timeout`-Failures.
+LLM und Embeddings laufen über den **geteilten llm-stack** (eigenes
+Compose-Projekt, Repo `llm-stack`), seit dem myai-Split komplett auf myai:
+Extraktion UND Queries via `http://myai:11436` (`llm-qwen`/`qwen3-14b`, voll
+auf myais RTX 3070+2060; qwen-only nach A/B-Test 2026-08-03 — auf Augenhöhe
+bis besser als mistral bei deutschen Antworten) + Embeddings via
+`http://myai:11435` (`bge-m3`, 1024-dim, dauerhaft auf myais RTX 2060 — immer
+GPU-schnell, keine CPU-`Worker execution timeout`-Failures). myai darf
+schlafen: `ingest-begin.sh` weckt ihn per Wake-on-LAN vor jedem Ingest.
 
-Warum geteilt statt eigenes Modell: Auf ~16 GB VRAM (RTX 5080, geteilt mit dem
-Desktop) läuft mistral dauergeladen (`-c 32768`, partial offload `-ngl 27`,
-~12–13 GB). Ein zweites großes Modell daneben führt zu OOM (empirisch:
-`qwen3:14b` → Exit 137) — deshalb läuft immer nur EIN Chat-Modell, Wechsel per
-stop/start. Die eigentliche **Antwortformulierung
-übernimmt ohnehin Claude** (via `only_context=True` liefert LightRAG nur die
-Roh-Chunks/Entitäten) — das lokale Modell ist nur für Extraktion und
-Kontext-Retrieval zuständig.
+Der frühere GPU-Swap auf myubuntu (nur EIN Chat-Modell in 16 GB, Wechsel per
+stop/start + Alias-Trick) ist damit obsolet — mistral läuft dort durchgehend.
+Die eigentliche **Antwortformulierung übernimmt ohnehin meist Claude** (via
+`only_context=True` liefert LightRAG nur die Roh-Chunks/Entitäten) — das lokale
+Modell ist primär für Extraktion und Kontext-Retrieval zuständig.
 
 ## Setup
 
 ```bash
-# Voraussetzung: der llm-stack (Repo llm-stack: llm-mistral, llm-qwen, llm-embed)
-# läuft bereits auf demselben Host (myubuntu/RTX 5080) — doc-graph nutzt ihn mit,
-# kein eigener Modell-Download nötig (GGUF wird beim Start der llm-stack-Container
-# automatisch via `-hf` von Hugging Face geladen).
+# Voraussetzung: der llm-stack (Repo llm-stack) läuft — llm-mistral auf
+# myubuntu (llm-net), llm-qwen + llm-embed auf myai (./deploy.sh myai dort) —
+# doc-graph nutzt ihn mit, kein eigener Modell-Download nötig (GGUF wird beim
+# Start der llm-stack-Container automatisch via `-hf` geladen).
 
 # Im Run-Verzeichnis (/var/local/mydocker/doc-graph):
 cp .env.example .env   # PAPERLESS_TOKEN eintragen
@@ -159,8 +157,8 @@ Tooltip erst nach kurzem Verweilen mit der Maus, Löschen hovert rot, der Rest g
   **nach dem aktuellen Batch** (`INGEST_BATCH` Docs, default 5 — ein Batch wird
   immer ganz zu Ende geführt; POST `/ingest/control`, serverseitig derselbe Weg
   wie das MCP-Tool `ingest_control`). **Stop** bricht danach ab (bereits fertig
-  indexierte Dokumente bleiben). **Pause** gibt die GPU frei (mistral zurück für
-  paperless-ai); **Fortsetzen** lädt qwen neu und macht beim nächsten Batch weiter.
+  indexierte Dokumente bleiben). **Pause** hält an;
+  **Fortsetzen** weckt myai bei Bedarf neu und macht beim nächsten Batch weiter.
 - **Erstellen/Aktualisieren:** Rendert den Graphen aus `.graphml` (POST `/refresh`).
 - **Umbenennen:** Öffnet ein Eingabefeld für den neuen Anzeigenamen (POST `/rename`).
 - **Löschen:** Entfernt den Projekt-Index nach Browser-Bestätigung (Quelldokumente
@@ -258,7 +256,7 @@ docker compose -f /var/local/mydocker/doc-graph/docker-compose.yml up -d
 | `list_projects()` | Projekte + Dokumentzahl (zeigt project_id, optional Anzeigename in Klammern) |
 | `ingest_paperless(project_id, tag/document_type/correspondent/query_text, regelwerk)` | Delta-Indexierung aus Paperless (Hash-Manifest, nur Neues/Geändertes) — Extraktion läuft im Hintergrund, das Tool kehrt sofort zurück. `regelwerk=True` für Bedingungswerke/Verträge (siehe unten) |
 | `ingest_status(project_id)` | Fortschritt/Ergebnis des laufenden bzw. letzten Ingest-Laufs. Feld `docs` zeigt die **echten** LightRAG-Zustände (`processed`/`processing`/`pending`/`failed`) — nur `processed` heißt wirklich im Graph; `state:done` heißt nur „Dispatch fertig" |
-| `ingest_control(project_id, action)` | Steuert einen laufenden Ingest: `pause` (gibt die GPU frei → mistral zurück für paperless-ai), `resume` (lädt qwen neu, macht weiter), `stop` (bricht ab, bereits fertig Indexiertes bleibt). `stop`/`pause` wirken **sofort** — der laufende `ainsert` wird mitten im Batch abgebrochen; das abgebrochene Doc wird beim Re-Ingest neu geholt |
+| `ingest_control(project_id, action)` | Steuert einen laufenden Ingest: `pause` (hält nach dem Batch an), `resume` (weckt myai bei Bedarf, macht weiter), `stop` (bricht ab, bereits fertig Indexiertes bleibt). `stop`/`pause` wirken **sofort** — der laufende `ainsert` wird mitten im Batch abgebrochen; das abgebrochene Doc wird beim Re-Ingest neu geholt |
 | `ingest_directory(project_id, subpath, regelwerk)` | .txt/.md/.pdf aus gemountetem Verzeichnis (PDF via pdftotext, kein OCR — gescannte Bilder über Paperless). Läuft wie `ingest_paperless` im Hintergrund (steuerbar via `ingest_control`/`ingest_status`) und kehrt sofort zurück |
 | `query(project_id, question, mode, only_context, max_total_tokens)` | Abfrage: local / global / hybrid / mix / naive. `only_context` ist **default True** (Claude formuliert aus dem Kontext); die lokale LLM-Formulierung ist auf geteilter GPU zu langsam. `max_total_tokens` (default 12000) deckelt den Kontext, damit er das MCP-Token-Limit nicht sprengt |
 | `get_entity(project_id, entity_name)` | Alle Fakten/Relationen zu einer Entität |
@@ -307,32 +305,19 @@ von „was behauptet die Gegenseite" (query auf dem Fall-Projekt).
 - **Modellqualität = Graphqualität.** Wenn der Graph zu dünn wirkt
   (wenige Relationen), Extraktion mit größerem/anderem Modell wiederholen:
   `delete_project` + erneuter Ingest mit geändertem `LLM_MODEL`.
-- **Voll-GPU-Extraktion via qwen-Swap — automatisch.** mistral-24b passt nur mit
-  CPU-Offload in die 16 GB (13/40 Layer im RAM → langsam, Extraktions-Timeouts).
-  Da paperless-ai selten läuft, teilt man die GPU **zeitlich**. Das passiert jetzt
-  **automatisch bei jedem Ingest**: sobald `ingest_paperless`/`ingest_directory`
-  Dokumente extrahiert, ruft der Server `swap-to-qwen.sh` (`docker stop llm-mistral`
-  + `docker start llm-qwen`; beide teilen den Netz-Alias `llm`, LLM_BASE_URL bleibt
-  unverändert). Dasselbe Skript swappt auch den **Embedder** auf die GPU (`docker
-  stop llm-embed` + `docker start llm-embed-gpu`, gemeinsamer Alias `embed`) —
-  bge-m3 voll auf die GPU neben qwen, damit die Chunk-Embeddings nicht am CPU-
-  Timeout sterben. Nach Abschluss `swap-to-mistral.sh` (qwen + GPU-Embedder raus,
-  mistral + CPU-Embedder zurück). paperless-ai
-  wird dabei NICHT mehr pausiert — es ist auf `llm-mistral` gepinnt und bekommt nie
-  qwen-Antworten; seine UI zeigt während des Swaps „Modell offline".
-  Paralleler Ingest über mehrere Projekte swappt per Refcount nur
-  einmal rein/raus; ein Crash/Deploy mitten im Ingest lässt qwen (bzw. den
-  GPU-Embedder) verwaist auf der GPU zurück — der **Startup-Reconcile** prüft beim
-  Serverstart, ob `llm-qwen` **oder** `llm-embed-gpu` noch läuft, und swappt zurück.
-  Der Rückweg `swap-to-mistral.sh` **wartet auf die VRAM-Freigabe**, bevor mistral
-  startet (sonst lädt mistral in belegtes VRAM → OOM-Crash-Loop, erlebt 2026-07-17).
+- **Voll-GPU-Extraktion auf myai — automatisch.** qwen3-14b + bge-m3 laufen
+  dauerhaft auf myai (RTX 3070+2060, Repo `llm-stack`); myai darf schlafen.
+  Vor jedem Ingest ruft der Server `ingest-begin.sh`: weckt myai per
+  Wake-on-LAN (Magic Packet, Python-stdlib) und wartet, bis qwen (`:11436`)
+  und der Embedder (`:11435`) antworten. `ingest-end.sh` ist ein No-op —
+  es gibt nichts mehr zurückzuswappen, mistral auf myubuntu läuft durchgehend
+  und paperless-ai bleibt vom Ingest komplett unberührt. Paralleler Ingest
+  über mehrere Projekte weckt per Refcount nur einmal.
   Inserts laufen global serialisiert (LightRAG-Instanzen teilen
   den Pipeline-Lock — paralleles `ainsert` kehrt sonst unverarbeitet zurück), und
   ein Dokument gilt erst als indexiert, wenn LightRAG es wirklich `processed`
   meldet — sonst holt der nächste Ingest es automatisch nach.
-  Voraussetzung: `/var/run/docker.sock` ist in den doc-graph-
-  Container gemountet (compose) — root-äquivalent auf dem Host, bewusst, das Netz
-  ist intern. Abschaltbar via `INGEST_SWAP=0` (z. B. lokale Dev-Umgebung ohne Socket).
+  Abschaltbar via `INGEST_SWAP=0` (z. B. lokale Dev-Umgebung).
 - **Wöchentlicher Modell-Check:** `model_check.sh` (via cron) ermittelt das
   aktuell geladene Extraktions-Modell per `docker exec` am laufenden Chat-Container
   (`llm-*` ohne `-embed`, `/v1/models`) ab. Der Claude-Agent recherchiert dann read-only, ob es ein besseres
@@ -360,16 +345,15 @@ von „was behauptet die Gegenseite" (query auf dem Fall-Projekt).
 - **`LLM_TIMEOUT`** (default 480 s): Timeout je einzelnem LLM-Call. Bei CPU-Offload/
   niedrigem Throughput hochsetzen. **Achtung:** löst nur das Symptom — der Engpass bei
   dichten Docs ist der GPU-Throughput (z. B. ~5,8 t/s im CPU-Offload); dauerhaft hilft
-  nur Voll-GPU-Extraktion (`swap-to-qwen.sh`), nicht ein höherer Timeout.
+  nur Voll-GPU-Extraktion (qwen@myai), nicht ein höherer Timeout.
 - **`MAX_ASYNC`** (default 2): parallele LLM-Calls. Bei dichten Beständen / knapper
   GPU auf `1` setzen, damit ein Poison-Doc nicht den ganzen Durchsatz frisst.
 - **`EMBED_MAX_ASYNC`** (default 3) / **`EMBED_TIMEOUT`** (default 180 s):
-  Robustheit des Embedding-Pfads. `bge-m3` läuft auf CPU (die GPU hat während des
-  Ingests qwen). Die LightRAG-Defaults (`max_async=8`, `timeout=30 s`) überfluten
-  den CPU-Embedder → `Worker execution timeout` → `IndexFlushError` → das **ganze
-  Dokument failt**, obwohl die Extraktion längst durch war. Weniger Parallelität +
-  großzügigerer Timeout beheben das. Dauerhaft schneller wird es erst mit `bge-m3`
-  auf der GPU (Platz neben qwen) statt CPU.
+  Robustheit des Embedding-Pfads. Historisch lief `bge-m3` auf CPU; die
+  LightRAG-Defaults (`max_async=8`, `timeout=30 s`) überfluteten ihn →
+  `Worker execution timeout` → `IndexFlushError` → das **ganze Dokument failte**.
+  Seit dem myai-Split läuft `bge-m3` dauerhaft auf myais RTX 2060 — die
+  konservativen Werte bleiben trotzdem, sie kosten auf GPU praktisch nichts.
 - **`MAX_DOC_CHARS`** (default 300000 ≈ 125 Chunks): Sicherheits-Guard beim
   Ingest. Docs mit mehr Textzeichen werden **nicht** verarbeitet, sondern in
   `ingest_flagged.json` beiseitegelegt und in `ingest_status` unter `flagged`
