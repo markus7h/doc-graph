@@ -9,7 +9,7 @@ Dokumentquelle ist primär Paperless-NGX (bereits OCR-ter Text via REST-API),
 alternativ lokale Textdateien (ingest_directory).
 
 Transport: streamable HTTP -> Claude Code:
-  claude mcp add --transport http doc-graph http://myubuntu:5775/mcp
+  claude mcp add --transport http doc-graph http://mystorage:5775/mcp
 """
 
 import asyncio
@@ -183,7 +183,7 @@ _insert_lock = asyncio.Lock()
 # docker-compose.myai.yml). ingest-begin.sh weckt myai per Wake-on-LAN und
 # wartet auf beide Health-Endpoints; ingest-end.sh ist ein No-op. Der frühere
 # GPU-Swap auf myubuntu (mistral raus / qwen rein via Docker-Socket) ist mit
-# dem Split obsolet — mistral läuft dort durchgehend.
+# dem Split obsolet.
 # Refcount unter Lock: paralleler Ingest über mehrere Projekte weckt EINMAL.
 # ponytail: globaler Lock reicht — Ingests laufen selten und selten parallel.
 # INGEST_SWAP=0 schaltet die Hooks ab (lokale Dev-Umgebung).
