@@ -1,6 +1,6 @@
 # doc-graph — Knowledge Graph pro Projekt als MCP-Server
 
-Ein Container auf `myubuntu` (RTX 5080), der pro "Kontext"/Projekt einen
+Ein Container auf `mystorage`, der pro "Kontext"/Projekt einen
 abfragbaren Knowledge Graph (LightRAG: Graph + Vektoren, hybrid) bereithält und
 ihn als MCP-Server für Claude Code exponiert. Dokumentquelle ist primär
 Paperless-NGX — der OCR-Text kommt fertig über die REST-API, die kuratierten
@@ -42,7 +42,9 @@ GPU-schnell, keine CPU-`Worker execution timeout`-Failures). myai darf
 schlafen: `ingest-begin.sh` weckt ihn per Wake-on-LAN vor jedem Ingest.
 
 Der frühere GPU-Swap auf myubuntu (nur EIN Chat-Modell in 16 GB, Wechsel per
-stop/start + Alias-Trick) ist damit obsolet — mistral läuft dort durchgehend.
+stop/start + Alias-Trick) ist damit obsolet. doc-graph selbst braucht seit dem
+Split gar keine GPU mehr — deshalb läuft der Container seit 2026-08-04 auf
+mystorage statt auf myubuntu.
 Die eigentliche **Antwortformulierung übernimmt ohnehin meist Claude** (via
 `only_context=True` liefert LightRAG nur die Roh-Chunks/Entitäten) — das lokale
 Modell ist primär für Extraktion und Kontext-Retrieval zuständig.
@@ -50,17 +52,24 @@ Modell ist primär für Extraktion und Kontext-Retrieval zuständig.
 ## Setup
 
 ```bash
-# Voraussetzung: der llm-stack (Repo llm-stack) läuft — llm-mistral auf
-# myubuntu (llm-net), llm-qwen + llm-embed auf myai (./deploy.sh myai dort) —
-# doc-graph nutzt ihn mit, kein eigener Modell-Download nötig (GGUF wird beim
-# Start der llm-stack-Container automatisch via `-hf` geladen).
+# Voraussetzung: der llm-stack (Repo llm-stack) läuft — llm-qwen + llm-embed
+# auf myai (./deploy.sh myai dort) — doc-graph nutzt ihn mit, kein eigener
+# Modell-Download nötig (GGUF wird beim Start der llm-stack-Container
+# automatisch via `-hf` geladen).
 
 # Im Run-Verzeichnis (/var/local/mydocker/doc-graph):
 cp .env.example .env   # PAPERLESS_TOKEN eintragen
 docker compose up -d --build
 ```
 
-**Updates deployen: immer `./deploy.sh`** (aus dem Git-Repo). Das Script
+**Updates deployen: immer `./deploy.sh`** — und zwar auf mystorage, wo der
+Container läuft:
+
+```bash
+ssh mystorage 'cd /shares/data/homes/markus/myCode/github/doc-graph && ./deploy.sh'
+```
+
+Das Script
 kopiert die Code-/Build-Dateien ins Deploy-Verzeichnis, rebuildet den
 Container und verifiziert per md5, dass der Container wirklich mit dem
 deployten Code läuft. `docker-compose.yml` und `.env` werden bewusst nicht
@@ -74,18 +83,17 @@ Der Daten-Mount in `docker-compose.yml` ist ein **absoluter Pfad**
 `./data` mounten — der Index wäre „weg" und alle Queries lieferten no-context.
 Der kanonische Datenort ist immer das Deploy-Verzeichnis.
 
-Das externe Docker-Netz `llm-net` (gehört dem llm-stack-Compose-Projekt)
-verbindet doc-graph mit `llm` (aktives Chat-Modell) und `llm-embed` (bge-m3);
-`paperless` (NGX) kommt via LAN-DNS. Bei
-abweichendem Setup den Netzwerk-Block in `docker-compose.yml` anpassen oder
-`PAPERLESS_URL=https://<host>/` (bzw. `http://<IP>:8010`) verwenden. Der
+LLM (`myai:11436`), Embedder (`myai:11435`) und `paperless` (NGX) kommen alle
+via LAN-DNS — kein Docker-Netz zwischen den Stacks nötig. Bei abweichendem
+Setup `LLM_BASE_URL`/`EMBED_BASE_URL` bzw.
+`PAPERLESS_URL=https://<host>/` (bzw. `http://<IP>:8010`) setzen. Der
 compose-Default ist `https://paperless/`; der Client akzeptiert das
 self-signed LAN-Cert (`verify=False`).
 
 ## Claude Code anbinden
 
 ```bash
-claude mcp add --transport http doc-graph http://myubuntu:5775/mcp
+claude mcp add --transport http doc-graph http://mystorage:5775/mcp
 ```
 
 Da die Konfiguration über `CLAUDE_CONFIG_DIR` zentral liegt, ist der Server
@@ -133,10 +141,10 @@ nicht bei jedem Klick neu. Bedienung:
 Das Tool gibt die URL zurück:
 
 ```
-http://myubuntu:5776/<project_id>/graph.html
+http://mystorage:5776/<project_id>/graph.html
 ```
 
-Der Viewer-Root (`http://myubuntu:5776/`) zeigt eine Landing-Page: alle
+Der Viewer-Root (`http://mystorage:5776/`) zeigt eine Landing-Page: alle
 indexierten Projekte als Karten mit ihrem Anzeigenamen (falls gesetzt) und ihren
 Kennzahlen — **Anzahl indexierter Dokumente** (aus dem Ingest-Manifest) sowie, bei
 gerendertem Graph, **Anzahl Entitäten und Kanten** (aus dem `.graphml`). Der
@@ -176,14 +184,14 @@ je Projekt ein Unterordner, analog ai-rem im selben OneDrive-Verzeichnis daneben
 
 ```yaml
 # docker-compose.yml
-- ${DOC_GRAPH_BACKUP_PATH:-/home/markus/mystorage/OneDrive/doc-graph}:/backups
+- ${DOC_GRAPH_BACKUP_PATH:-/shares/data/homes/markus/OneDrive/doc-graph}:/backups
 ```
 
 Ablage: `<Backup-Ordner>/<project_id>/backup_<YYYY-MM-DD_HH-MM-SS>.tar.gz`.
 Die Archiv-Wurzel ist die `project_id`, damit eine einzelne Datei für sich allein
 wiederherstellbar ist (auch in ein noch nicht existierendes Projekt).
 
-Bedienung komplett über die Viewer-Landing-Page (`http://myubuntu:5776/`):
+Bedienung komplett über die Viewer-Landing-Page (`http://mystorage:5776/`):
 
 Global (Backup-Karte):
 - **Zeitplan:** `aus` / `stündlich` / `täglich` / `wöchentlich`, „Speichern" übernimmt.
@@ -310,8 +318,8 @@ von „was behauptet die Gegenseite" (query auf dem Fall-Projekt).
   Vor jedem Ingest ruft der Server `ingest-begin.sh`: weckt myai per
   Wake-on-LAN (Magic Packet, Python-stdlib) und wartet, bis qwen (`:11436`)
   und der Embedder (`:11435`) antworten. `ingest-end.sh` ist ein No-op —
-  es gibt nichts mehr zurückzuswappen, mistral auf myubuntu läuft durchgehend
-  und paperless-ai bleibt vom Ingest komplett unberührt. Paralleler Ingest
+  es gibt nichts mehr zurückzuswappen, und paperless-ai bleibt vom Ingest
+  komplett unberührt. Paralleler Ingest
   über mehrere Projekte weckt per Refcount nur einmal.
   Inserts laufen global serialisiert (LightRAG-Instanzen teilen
   den Pipeline-Lock — paralleles `ainsert` kehrt sonst unverarbeitet zurück), und
