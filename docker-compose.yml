@@ -16,8 +16,11 @@ services:
       EMBED_BASE_URL: ${EMBED_BASE_URL:-http://myai:11435/v1}
       EMBED_MODEL: ${EMBED_MODEL:-bge-m3}
       EMBED_DIM: ${EMBED_DIM:-1024}
-      # --- Paperless-NGX (Dokumentquelle): via LAN-DNS 'paperless' erreichbar ---
-      PAPERLESS_URL: ${PAPERLESS_URL:-https://paperless/}
+      # --- Paperless-NGX (Dokumentquelle): direkt ueber dessen Compose-Netz
+      # web_net als Container-Alias 'webserver'. NICHT ueber https://paperless —
+      # der LAN-Name loest nur auf IPv6 auf, und die Docker-Bridge kann kein IPv6
+      # ("Network is unreachable", 2026-08-05). ---
+      PAPERLESS_URL: ${PAPERLESS_URL:-http://webserver:8000}
       PAPERLESS_TOKEN: ${PAPERLESS_TOKEN}
       # --- Server ---
       MCP_PORT: "5775"
@@ -48,3 +51,11 @@ services:
       # Pfad an den Host anpassen und einkommentieren (Verzeichnis muss existieren,
       # sonst legt Docker es leer als root an); primäre Quelle bleibt Paperless.
       # - /home/markus/dokumente:/data/inputs:ro
+    networks:
+      - default
+      - web_net
+
+# Gehoert dem paperless-ngx-Compose-Projekt (compose-files/paperless).
+networks:
+  web_net:
+    external: true
