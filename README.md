@@ -177,6 +177,12 @@ und die letzten Archive.
 
 Der Viewer ist ein stdlib-Fileserver (LAN-intern, kein Auth/HTTPS).
 
+Er bindet per Default auf `::` (`VIEWER_BIND`), der Socket bleibt dabei
+**dual-stack** — der Container ist also sowohl unter seiner IPv6 aus
+`fd00:24:9:68::/64` erreichbar (Caddy proxyt `docgraph.lan` direkt dorthin) als
+auch weiterhin über den published IPv4-Port. `VIEWER_BIND=0.0.0.0` erzwingt
+reines IPv4. Der MCP-Port (`MCP_PORT`) ist davon nicht betroffen.
+
 ## Backup
 
 Backups laufen **je Projekt** als eigenes `tar.gz` in einen gemounteten Ordner —
