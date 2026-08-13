@@ -26,6 +26,7 @@ import threading
 import time
 from collections import Counter
 from datetime import datetime
+import socket
 import urllib.parse
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
@@ -149,6 +150,10 @@ BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", "/backups"))
 MAX_BACKUPS = int(os.environ.get("MAX_BACKUPS", "10"))
 MCP_PORT = int(os.environ.get("MCP_PORT", "5775"))
 VIEWER_PORT = int(os.environ.get("VIEWER_PORT", "5776"))
+# Default "::": der Container ist unter seiner IPv6 aus fd00:24:9:68::/64
+# erreichbar, Caddy proxyt docgraph.lan direkt dorthin. Der Socket bleibt
+# dual-stack (siehe _DualStackHTTPServer), IPv4 funktioniert also weiter.
+VIEWER_BIND = os.environ.get("VIEWER_BIND", "::")
 # Hostname, unter dem der Viewer vom Browser erreichbar ist (für die zurückgegebene URL)
 PUBLIC_HOST = os.environ.get("PUBLIC_HOST", "localhost")
 
@@ -1691,13 +1696,28 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
         self.send_error(404)
 
 
+class _DualStackHTTPServer(HTTPServer):
+    """HTTPServer auf einem IPv6-Socket mit abgeschaltetem V6ONLY.
+
+    stdlib-HTTPServer ist AF_INET (nur IPv4). Mit AF_INET6 allein waere der
+    Server IPv6-only; V6ONLY=0 nimmt zusaetzlich IPv4-mapped Verbindungen an,
+    sodass der published Port weiter traegt.
+    """
+
+    address_family = socket.AF_INET6
+
+    def server_bind(self):
+        self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        super().server_bind()
+
+
 def _start_viewer_server() -> None:
     """Serviert PROJECTS_DIR statisch (nur die generierten graph.html-Ansichten
     interessieren). Daemon-Thread, LAN-intern. ponytail: stdlib-Fileserver reicht,
     kein Auth/HTTPS — hinter dem internen Netz, kein öffentlicher Zugang."""
     PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
     handler = functools.partial(_ViewerHandler, directory=str(PROJECTS_DIR))
-    httpd = HTTPServer(("0.0.0.0", VIEWER_PORT), handler)
+    httpd = _DualStackHTTPServer((VIEWER_BIND, VIEWER_PORT), handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     log.info("Graph-Viewer läuft auf Port %s (http://%s:%s/<projekt>/graph.html)",
              VIEWER_PORT, PUBLIC_HOST, VIEWER_PORT)
