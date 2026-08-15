@@ -57,7 +57,7 @@ Modell ist primär für Extraktion und Kontext-Retrieval zuständig.
 # Modell-Download nötig (GGUF wird beim Start der llm-stack-Container
 # automatisch via `-hf` geladen).
 
-# Im Run-Verzeichnis (/var/local/mydocker/doc-graph):
+# Im Run-Verzeichnis (/var/local/mydocker/compose-files/doc-graph):
 cp .env.example .env   # PAPERLESS_TOKEN eintragen
 docker compose up -d --build
 ```
@@ -231,10 +231,10 @@ Restore von Hand: Container stoppen, Projekt-Archiv ins Datenverzeichnis entpack
 Container starten.
 
 ```bash
-docker compose -f /var/local/mydocker/doc-graph/docker-compose.yml down
+docker compose -f /var/local/mydocker/compose-files/doc-graph/docker-compose.yml down
 tar -xzf /home/markus/mystorage/OneDrive/doc-graph/<project_id>/backup_<ts>.tar.gz \
     -C /var/local/mydocker/doc-graph/data/projects   # <project_id>/ -> data/projects/<project_id>
-docker compose -f /var/local/mydocker/doc-graph/docker-compose.yml up -d
+docker compose -f /var/local/mydocker/compose-files/doc-graph/docker-compose.yml up -d
 ```
 
 ## Typischer Workflow
