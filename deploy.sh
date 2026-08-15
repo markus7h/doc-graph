@@ -6,7 +6,9 @@
 set -euo pipefail
 
 SRC="$(cd "$(dirname "$0")" && pwd)"
-DST=/var/local/mydocker/doc-graph
+# mystorage-Konvention: Code + Compose unter compose-files/<stack>, persistente
+# Daten daneben unter /var/local/mydocker/<stack> (in der Compose absolut gemountet).
+DST=/var/local/mydocker/compose-files/doc-graph
 
 # Nur Code/Build-Dateien. docker-compose.yml und .env bleiben Deploy-eigen
 # (lokale Mounts/Secrets) und werden bewusst NICHT überschrieben.

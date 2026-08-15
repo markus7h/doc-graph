@@ -8,7 +8,7 @@ set -euo pipefail
 export HOME=/home/markus
 export PATH="/home/markus/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
-DIR=/var/local/mydocker/doc-graph
+DIR=/var/local/mydocker/compose-files/doc-graph
 REPORT="$DIR/model_check_report.md"
 STAMP=$(date '+%Y-%m-%d %H:%M')
 
