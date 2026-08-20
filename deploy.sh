@@ -12,7 +12,7 @@ DST=/var/local/mydocker/compose-files/doc-graph
 
 # Nur Code/Build-Dateien. docker-compose.yml und .env bleiben Deploy-eigen
 # (lokale Mounts/Secrets) und werden bewusst NICHT überschrieben.
-FILES=(server.py graphview.py clauses.py ingest-begin.sh ingest-end.sh Dockerfile requirements.txt test_backup.py)
+FILES=(server.py graphview.py clauses.py ingest-begin.sh ingest-end.sh Dockerfile requirements.txt test_backup.py test_ingest_extras.py)
 
 for f in "${FILES[@]}"; do
   cp "$SRC/$f" "$DST/$f"

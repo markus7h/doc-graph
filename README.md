@@ -271,7 +271,7 @@ docker compose -f /var/local/mydocker/compose-files/doc-graph/docker-compose.yml
 | `ingest_paperless(project_id, tag/document_type/correspondent/query_text, regelwerk)` | Delta-Indexierung aus Paperless (Hash-Manifest, nur Neues/Geändertes) — Extraktion läuft im Hintergrund, das Tool kehrt sofort zurück. `regelwerk=True` für Bedingungswerke/Verträge (siehe unten) |
 | `ingest_status(project_id)` | Fortschritt/Ergebnis des laufenden bzw. letzten Ingest-Laufs. Feld `docs` zeigt die **echten** LightRAG-Zustände (`processed`/`processing`/`pending`/`failed`) — nur `processed` heißt wirklich im Graph; `state:done` heißt nur „Dispatch fertig" |
 | `ingest_control(project_id, action)` | Steuert einen laufenden Ingest: `pause` (hält nach dem Batch an), `resume` (weckt myai bei Bedarf, macht weiter), `stop` (bricht ab, bereits fertig Indexiertes bleibt). `stop`/`pause` wirken **sofort** — der laufende `ainsert` wird mitten im Batch abgebrochen; das abgebrochene Doc wird beim Re-Ingest neu geholt |
-| `ingest_directory(project_id, subpath, regelwerk)` | .txt/.md/.pdf aus gemountetem Verzeichnis (PDF via pdftotext, kein OCR — gescannte Bilder über Paperless). Läuft wie `ingest_paperless` im Hintergrund (steuerbar via `ingest_control`/`ingest_status`) und kehrt sofort zurück |
+| `ingest_directory(project_id, subpath, regelwerk)` | .txt/.md/.pdf aus gemountetem Verzeichnis (PDF via pdftotext, kein OCR — gescannte Bilder über Paperless). Bekommt wie der Paperless-Pfad einen Metadaten-Header (Dateiname, Änderungsdatum, Ordnerpfad als Schlagworte), damit Datei-Dokumente im Graph nicht schlechter verankert sind. Läuft wie `ingest_paperless` im Hintergrund (steuerbar via `ingest_control`/`ingest_status`) und kehrt sofort zurück |
 | `query(project_id, question, mode, only_context, max_total_tokens)` | Abfrage: local / global / hybrid / mix / naive. `only_context` ist **default True** (Claude formuliert aus dem Kontext); die lokale LLM-Formulierung ist auf geteilter GPU zu langsam. `max_total_tokens` (default 12000) deckelt den Kontext, damit er das MCP-Token-Limit nicht sprengt |
 | `get_entity(project_id, entity_name)` | Alle Fakten/Relationen zu einer Entität |
 | `get_clause(project_id, clause, document)` | **Regelwerk-Projekte:** exakter Wortlaut einer Klausel (`'§ 2'`, `'§2'`, `'2'`, `'Artikel 3'`) — deterministisch aus dem Klausel-Store, kein LLM/Retrieval. `document` filtert per Substring auf den Dokumenttitel |
@@ -387,6 +387,28 @@ von „was behauptet die Gegenseite" (query auf dem Fall-Projekt).
   greift beim nächsten Ingest, Altlasten-Guard lässt es dann in der Pipeline) oder
   `ignore` (dauerhaft ausblenden, wird nicht mehr geflaggt). Das Paperless-Quell-
   dokument bleibt in jedem Fall unberührt — geflaggt heißt nur „nicht im Graph".
+- **`MAX_DOC_ATTEMPTS`** (default `3`, `0` schaltet ab): **Failure-Deckel.**
+  LightRAG setzt `failed`-Dokumente bei *jedem* `ainsert` selbsttätig auf
+  `pending` zurück und leert dabei `error_msg` — ein Dokument, das reproduzierbar
+  den LLM-Timeout reißt, wird damit endlos neu versucht und bremst jeden
+  Folgelauf aus, ohne dass die Ursache irgendwo stehen bliebe. doc-graph zählt
+  die Fehlversuche deshalb selbst (`ingest_attempts.json`, mit dem zuletzt
+  gesehenen Fehlergrund) und legt ein Dokument nach `MAX_DOC_ATTEMPTS`
+  erfolglosen Läufen endgültig beiseite: es wird aus LightRAG entfernt und wie
+  ein übergroßes Doc in `ingest_flagged.json` geflaggt, mit dem Fehlergrund in
+  der Begründung. Ein erfolgreicher Ingest löscht den Zähler wieder. Die
+  Entscheidung im Viewer gilt genauso: `approve` nimmt das Doc vom Deckel aus
+  (wird weiter versucht), `ignore` blendet es dauerhaft aus.
+- **`ENTITY_TYPES`** (default `Person,Organisation,Ort,Datum,Dokument,Vorgang,`
+  `Rechtsnorm,Betrag,Sache,Begriff`): Whitelist der Entity-Typen im
+  Extraktions-Prompt. Ohne sie nimmt LightRAG seine elf englischen Defaults
+  (u. a. `Creature`, `NaturalObject` — für Aktenkorpora sinnlos) und das Modell
+  erfindet zusätzlich freie Typen, die der Viewer nur noch per Hash-Fallback
+  einfärben kann. Eine knappe, zum Korpus passende Liste macht Typen zwischen
+  Dokumenten vergleichbar; alles Übrige sortiert LightRAGs Prompt selbst nach
+  `Other` ein. **Pro Projekt überschreibbar** über `entity_types` in der
+  `meta.json` des Projekts (ein Bauakten-Projekt braucht andere Typen als eine
+  Vertragssammlung). Wirkt nur auf **neu** indexierte Dokumente.
 - **`GRAPH_LANGUAGE`** (default `German`): Sprache der extrahierten Entitäten/
   Beschreibungen. LightRAG-Default wäre `English` (Graph-Einträge landen dann
   englisch trotz deutscher Docs). Wirkt nur auf **neu** indexierte Dokumente —

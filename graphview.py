@@ -10,11 +10,22 @@ import re
 # ponytail: CDN reicht im LAN; ~1 MB inline lohnt nur bei echtem Offline-Zwang.
 _VIS_CDN = "https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"
 
-# stabile Farben pro entity_type (Fallback: aus Namen abgeleitet)
+# stabile Farben pro entity_type (Fallback: aus Namen abgeleitet).
+# Deutsch UND englisch, weil die Typ-Whitelist (server.ENTITY_TYPES) deutsch
+# ist, ältere Projekte aber noch mit LightRAGs englischen Defaults indexiert
+# wurden — gleiche Bedeutung soll gleiche Farbe bekommen.
 _TYPE_COLORS = {
-    "person": "#e6550d", "organization": "#3182bd", "location": "#31a354",
-    "geo": "#31a354", "event": "#756bb1", "category": "#636363",
-    "date": "#e7ba52", "concept": "#843c39",
+    "person": "#e6550d",
+    "organization": "#3182bd", "organisation": "#3182bd",
+    "location": "#31a354", "ort": "#31a354", "geo": "#31a354",
+    "event": "#756bb1", "vorgang": "#756bb1",
+    "category": "#636363", "begriff": "#636363", "concept": "#843c39",
+    "date": "#e7ba52", "datum": "#e7ba52",
+    "dokument": "#9e7bb5", "content": "#9e7bb5",
+    "rechtsnorm": "#a63603",
+    "betrag": "#17becf",
+    "sache": "#8c6d31", "artifact": "#8c6d31",
+    "other": "#999999",
 }
 
 
