@@ -316,12 +316,25 @@ von „was behauptet die Gegenseite" (query auf dem Fall-Projekt).
 ## Betriebshinweise
 
 - **Indexierung ist der teure Teil:** ~150 Dokumente ≈ mehrere hundert
-  LLM-Calls für die Extraktion. Danach nur Delta. Erstlauf am besten nachts starten.
+  LLM-Calls für die Extraktion — LightRAG macht **einen Call je Chunk**
+  (`CHUNK_TOKEN_SIZE`, default 1200 Token). Gemessen 2026-08-20 auf dem
+  llm-stack (qwen3-14B Q4, über RTX 3070 + 2060 layer-gesplittet, ein Slot):
+  **~31 Token/s** Generierung, ~1000–3000 Ausgabe-Token je Call → **30–100 s
+  pro Chunk**, ein 10k-Zeichen-Dokument also grob 2–5 Minuten. Ein Modell, das
+  ganz auf **eine** Karte passt, spart den PCIe-Split und ist der größte Hebel.
+  Danach nur Delta. Erstlauf am besten nachts starten.
   Der teure Teil läuft **im Hintergrund**: `ingest_paperless` startet die Extraktion
   und kehrt sofort zurück (sonst liefe der MCP-Call ins Timeout); Fortschritt/Ergebnis
   liefert `ingest_status(project_id)` (`running`/`done`/`error`). Der Status liegt nur im
   RAM — ein Container-Neustart mitten im Lauf verwirft ihn, das noch nicht gespeicherte
   Manifest sorgt dann beim nächsten Ingest für sauberes Nachholen.
+- **Durchsatz messen statt raten.** `ingest_status` liefert während des Laufs
+  `sec_per_doc` und `eta_min`, am Ende `elapsed_min`; pro Batch steht zusätzlich
+  eine Zeile im Container-Log (`docker logs doc-graph`):
+  `Ingest <projekt> Batch: 5 Docs / 48213 Zeichen in 812.4s (162.5s pro Doc)`.
+  Die Uhr startet **nach** dem Wake-Hook, ein myai-Boot verfälscht die Zahl also
+  nicht. Das ist die Referenz für jede Tuning-Änderung: Baseline auf einem festen
+  Doc-Set nehmen, `delete_project`, Änderung, gleiches Set erneut.
 - **Modellqualität = Graphqualität.** Wenn der Graph zu dünn wirkt
   (wenige Relationen), Extraktion mit größerem/anderem Modell wiederholen:
   `delete_project` + erneuter Ingest mit geändertem `LLM_MODEL`.
@@ -362,6 +375,12 @@ von „was behauptet die Gegenseite" (query auf dem Fall-Projekt).
   LightRAGs Chunk-Parallelität (`MAX_ASYNC`) auch bei vielen kleinen Docs aus;
   Pause/Stop greifen zwischen Batches (ein Batch wird immer ganz zu Ende geführt).
   `=1` stellt das alte feingranulare Verhalten (Cancel/Fortschritt pro Doc) wieder her.
+- **`PDFTOTEXT_TIMEOUT`** (default 120 s): Deckel je `pdftotext`-Aufruf beim
+  Verzeichnis-Ingest. Ein kaputtes oder riesiges PDF hängt sonst den Scan
+  unbegrenzt auf; nach dem Timeout gilt die Datei als nicht lesbar und zählt
+  wie ein nicht unterstütztes Format. Der Scan selbst läuft in einem Thread
+  (`asyncio.to_thread`) — sonst stünde während `rglob` + `pdftotext` der ganze
+  MCP-Server, inklusive Queries auf anderen Projekten.
 - **`MAX_GLEANING`** (default 0, LightRAG-Default wäre 1): Gleaning ist LightRAGs
   „hast du was übersehen?"-Nachfassrunde pro Chunk — verdoppelt die LLM-Calls
   für wenige Zusatz-Entitäten. Auf der geteilten GPU halber Ingest-Durchsatz,
@@ -373,8 +392,13 @@ von „was behauptet die Gegenseite" (query auf dem Fall-Projekt).
   niedrigem Throughput hochsetzen. **Achtung:** löst nur das Symptom — der Engpass bei
   dichten Docs ist der GPU-Throughput (z. B. ~5,8 t/s im CPU-Offload); dauerhaft hilft
   nur Voll-GPU-Extraktion (qwen@myai), nicht ein höherer Timeout.
-- **`MAX_ASYNC`** (default 2): parallele LLM-Calls. Bei dichten Beständen / knapper
-  GPU auf `1` setzen, damit ein Poison-Doc nicht den ganzen Durchsatz frisst.
+- **`MAX_ASYNC`** (default 2): parallele LLM-Calls. **Wirkt derzeit nicht** — der
+  llama-server läuft mit `-np 1` (ein Slot, `llm-stack/docker-compose.yml`), alle
+  Calls serialisieren dort unabhängig von diesem Wert. `-np 1` ist bewusst gewählt
+  (LightRAG-Query-Prompts sprengen mit ~14k Token einen 12288er-Slot); Preis laut
+  llm-stack-Notiz: ~35 % Ingest-Durchsatz. Wer `-np` erhöht, muss `MAX_ASYNC ≥ -np`
+  mitziehen. Bei dichten Beständen / knapper GPU auf `1` setzen, damit ein
+  Poison-Doc nicht den ganzen Durchsatz frisst.
 - **`EMBED_MAX_ASYNC`** (default 3) / **`EMBED_TIMEOUT`** (default 180 s):
   Robustheit des Embedding-Pfads. Historisch lief `bge-m3` auf CPU; die
   LightRAG-Defaults (`max_async=8`, `timeout=30 s`) überfluteten ihn →
