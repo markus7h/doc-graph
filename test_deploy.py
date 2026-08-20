@@ -4,6 +4,7 @@ Nur die Auswahl lokal-vs-remote wird geprüft (der Teil mit den Fallstricken:
 Kommandosubstitution unter `set -e`, leeres DEPLOY_HOST als gültiger Wert).
 Sync und Rebuild bleiben ungetestet — die brauchen einen echten Zielhost.
 """
+import re
 import subprocess
 from pathlib import Path
 
@@ -57,6 +58,34 @@ def test_explicit_empty_forces_local():
 
 def test_explicit_host_wins():
     assert _host({"DEPLOY_TARGET": "zielhost", "DEPLOY_HOST": "anderer"}) == "anderer"
+
+
+def test_dockerfile_copies_are_deployed():
+    """Jede im Dockerfile kopierte Projektdatei muss auch in FILES stehen.
+
+    Sonst laeuft der Build auf dem Zielhost in ein "file not found": das
+    Dockerfile erwartet eine Datei, die deploy.sh nie hinsynct (2026-08-20 mit
+    test_embed_cap.py genau so passiert).
+    """
+    root = Path(__file__).resolve().parent
+    deploy = (root / "deploy.sh").read_text(encoding="utf-8")
+    dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
+
+    m = re.search(r"^FILES=\((.*?)\)", deploy, re.S | re.M)
+    assert m, "FILES-Definition in deploy.sh nicht gefunden"
+    files = set(m.group(1).split())
+
+    kopiert = set()
+    for line in dockerfile.splitlines():
+        if not line.startswith("COPY "):
+            continue
+        # letztes Token ist das Ziel, davor die Quellen
+        teile = line.split()[1:-1]
+        kopiert.update(t for t in teile if not t.startswith("--"))
+
+    # nur Dateien, die es im Repo wirklich gibt (Wildcards/Verzeichnisse raus)
+    fehlend = {f for f in kopiert - files if (root / f).is_file()}
+    assert not fehlend, f"im Dockerfile kopiert, aber nicht in deploy.sh FILES: {sorted(fehlend)}"
 
 
 if __name__ == "__main__":
