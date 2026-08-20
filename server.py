@@ -72,6 +72,14 @@ MAX_ASYNC = int(os.environ.get("MAX_ASYNC", "2"))
 # Weniger Parallelität + großzügigerer Timeout = robuste Einbettung.
 EMBED_MAX_ASYNC = int(os.environ.get("EMBED_MAX_ASYNC", "3"))
 EMBED_TIMEOUT = int(os.environ.get("EMBED_TIMEOUT", "180"))
+# Harte Obergrenze pro Embedding-Input (Tokens). Beim llama-server ist das
+# -ub (physical batch size): laengere Inputs quittiert er mit HTTP 500
+# ("input (N tokens) is too large to process") — und LightRAG cancelt daraufhin
+# den GESAMTEN Ingest-Lauf, nicht nur das eine Doc (2026-08-20: 263 Docs an
+# einem 1066-Token-Input gestorben). Nicht nur Chunks laufen hier durch, auch
+# Entity-/Relation-Beschreibungen, die LightRAG frei zusammenbaut — die kann
+# CHUNK_TOKEN_SIZE prinzipiell nicht deckeln. Muss <= -ub des Servers sein.
+EMBED_MAX_TOKENS = int(os.environ.get("EMBED_MAX_TOKENS", "2048"))
 # Timeout (s) für einen einzelnen LLM-Call an den llama-server. Bei CPU-Offload
 # (niedriger t/s) reißen dichte Chunks den Default -> hier hochsetzen. Der
 # eigentliche Engpass bleibt der Throughput (GPU), das ist nur der Deckel.
@@ -145,17 +153,45 @@ async def _llm_model_func(prompt, system_prompt=None, history_messages=None, **k
 _embed_client: httpx.AsyncClient | None = None
 
 
+def _cap_embed_input(text: str) -> str:
+    """Kappt einen Embedding-Input auf EMBED_MAX_TOKENS.
+
+    Zeichenbasiert statt mit echtem Tokenizer: das Kappen ist eine Notbremse
+    gegen den 500er, kein Praezisionsinstrument — und ein Tokenizer-Roundtrip
+    pro Input waere hier reine Last. Faktor 3 Zeichen/Token ist fuer deutsche
+    Fachtexte konservativ gerechnet (englischer Fliesstext liegt eher bei 4),
+    kappt also im Zweifel zu frueh statt zu spaet.
+    ponytail: Zeichen-Heuristik, echten Tokenizer erst wenn nachweislich Inputs
+    trotz Cap noch 500en.
+    """
+    limit = EMBED_MAX_TOKENS * 3
+    if len(text) <= limit:
+        return text
+    return text[:limit]
+
+
 async def _embed_func(texts):
     # httpx-Timeout >= LightRAGs default_embedding_timeout, sonst schlägt der
     # Client zu, bevor LightRAG selbst tolerieren würde.
     global _embed_client
     if _embed_client is None:
         _embed_client = httpx.AsyncClient(timeout=EMBED_TIMEOUT)
+    payload = [_cap_embed_input(t) for t in texts]
     r = await _embed_client.post(
         f"{EMBED_BASE_URL}/embeddings",
-        json={"model": EMBED_MODEL, "input": list(texts)},
+        json={"model": EMBED_MODEL, "input": payload},
         headers={"Authorization": f"Bearer {LLM_API_KEY}"},
     )
+    # Zweite Verteidigungslinie: kommt trotz Cap ein "too large" zurueck (Server
+    # mit kleinerem -ub als EMBED_MAX_TOKENS, oder die Zeichen-Heuristik lag
+    # daneben), nochmal halbiert versuchen statt den ganzen Lauf zu verlieren.
+    if r.status_code == 500 and "too large" in r.text:
+        payload = [t[: len(t) // 2] for t in payload]
+        r = await _embed_client.post(
+            f"{EMBED_BASE_URL}/embeddings",
+            json={"model": EMBED_MODEL, "input": payload},
+            headers={"Authorization": f"Bearer {LLM_API_KEY}"},
+        )
     r.raise_for_status()
     data = r.json()["data"]
     return np.array([d["embedding"] for d in data], dtype=np.float32)
@@ -394,7 +430,10 @@ async def get_rag(project: str) -> LightRAG:
             default_embedding_timeout=EMBED_TIMEOUT,
             embedding_func=EmbeddingFunc(
                 embedding_dim=EMBED_DIM,
-                max_token_size=8192,
+                # muss zum echten Server-Limit passen, nicht zu bge-m3s
+                # theoretischen 8192 — sonst baut LightRAG Inputs, die der
+                # llama-server mit 500 ablehnt.
+                max_token_size=EMBED_MAX_TOKENS,
                 func=_embed_func,
             ),
             **extra,
