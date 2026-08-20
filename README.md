@@ -345,6 +345,13 @@ von „was behauptet die Gegenseite" (query auf dem Fall-Projekt).
   `model_check_report.md` (`EMPFEHLUNG: bleiben` / `EMPFEHLUNG: wechseln zu <tag>`).
 - **EMBED_DIM darf sich nachträglich nicht ändern** — Embedding-Modell pro
   Projekt festnageln, sonst Index neu aufbauen.
+- **`EMBED_MAX_TOKENS`** (default 2048): Obergrenze pro Embedding-Input, muss
+  `<=` dem `-ub` des llama-servers sein (llm-stack: 2048). Längere Inputs
+  quittiert der Server mit HTTP 500 (`input ... is too large`), woraufhin
+  LightRAG den **gesamten** Ingest-Lauf abbricht — nicht nur das betroffene
+  Dokument. Der Cap greift für alles, was eingebettet wird: Chunks *und* die
+  von LightRAG erzeugten Entity-/Relation-Beschreibungen, die
+  `CHUNK_TOKEN_SIZE` prinzipiell nicht deckeln kann.
 - **`CHUNK_TOKEN_SIZE`** (default 1200 = LightRAG-Default): größere Chunks =
   halb so viele Extraktions-Calls (der ~3–4k-Token-Prompt-Overhead fällt pro
   Chunk an). Der frühere 600er-Default war ein Workaround gegen 480s-Worker-
