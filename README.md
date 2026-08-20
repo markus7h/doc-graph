@@ -62,14 +62,20 @@ cp .env.example .env   # PAPERLESS_TOKEN eintragen
 docker compose up -d --build
 ```
 
-**Updates deployen: immer `./deploy.sh`** — und zwar auf mystorage, wo der
-Container läuft:
+**Updates deployen: immer `./deploy.sh`** — von überall, auch vom
+Entwicklungsrechner aus:
 
 ```bash
-ssh mystorage 'cd /shares/data/homes/markus/myCode/github/doc-graph && ./deploy.sh'
+./deploy.sh                      # von myubuntu: Sync + Rebuild per ssh/scp
+DEPLOY_HOST="" ./deploy.sh       # erzwingt lokalen Modus
+DEPLOY_TARGET=anderer ./deploy.sh  # anderer Zielhost
 ```
 
-Das Script
+Das Script erkennt am Hostnamen, ob es schon auf dem Zielhost (`mystorage`)
+läuft: wenn ja, arbeitet es lokal wie bisher; wenn nein, gehen Sync und
+Rebuild über ssh/scp. Vorher prüft es die SSH-Verbindung (`BatchMode`, damit
+es bei fehlendem Key sofort scheitert statt auf eine Passphrase zu warten)
+und dass das Deploy-Verzeichnis existiert. Es
 kopiert die Code-/Build-Dateien ins Deploy-Verzeichnis, rebuildet den
 Container und verifiziert per md5, dass der Container wirklich mit dem
 deployten Code läuft. `docker-compose.yml` und `.env` werden bewusst nicht
