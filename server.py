@@ -92,12 +92,33 @@ INGEST_BATCH = int(os.environ.get("INGEST_BATCH", "5"))
 # Chunks erzeugt, den Graph flutet und stundenlang die GPU bindet.
 # 300k Zeichen ~ 125 Chunks — großzügig über jedem echten Versicherungs-PDF.
 MAX_DOC_CHARS = int(os.environ.get("MAX_DOC_CHARS", "300000"))
+# Failure-Deckel: nach so vielen erfolglosen Ingest-Versuchen wird ein Dokument
+# endgültig beiseitegelegt statt weiter mitgeschleift. LightRAG setzt FAILED-Docs
+# bei JEDEM ainsert selbsttätig auf PENDING zurück (lightrag.py, "docs_to_reset")
+# — ein Doc, das reproduzierbar den LLM-Timeout reißt, blockiert damit endlos
+# jeden weiteren Lauf. 0 schaltet den Deckel ab.
+MAX_DOC_ATTEMPTS = int(os.environ.get("MAX_DOC_ATTEMPTS", "3"))
 # Kontext-Budget je Query (Tokens). 12000 statt Default 30000: hält den
 # only_context-Dump unter dem MCP-Token-Limit (Issue #2) und fokussiert.
 QUERY_MAX_TOKENS = int(os.environ.get("QUERY_MAX_TOKENS", "12000"))
 # Sprache der extrahierten Entitäten/Beschreibungen. LightRAG-Default ist
 # "English" -> Graph-Einträge landen auf Englisch, obwohl die Docs deutsch sind.
 GRAPH_LANGUAGE = os.environ.get("GRAPH_LANGUAGE", "German")
+# Erlaubte Entity-Typen (Whitelist im Extraktions-Prompt). Ohne das nimmt
+# LightRAG DEFAULT_ENTITY_TYPES (11 Stück, u.a. "Creature"/"NaturalObject" —
+# für Aktenkorpora sinnlos) und das Modell erfindet zusätzlich freie Typen;
+# graphview färbt die dann per md5-Fallback ein. Eine knappe, zum Korpus
+# passende Liste macht die Typen vergleichbar und Filter überhaupt erst
+# möglich. LightRAGs Prompt sortiert alles Übrige selbst nach "Other" ein
+# ("If none of the provided entity types apply ... classify it as `Other`"),
+# ein eigener Validator ist daher nicht nötig.
+# Pro Projekt überschreibbar via meta.json ("entity_types": [...]).
+ENTITY_TYPES = [
+    t.strip() for t in os.environ.get(
+        "ENTITY_TYPES",
+        "Person,Organisation,Ort,Datum,Dokument,Vorgang,Rechtsnorm,Betrag,Sache,Begriff",
+    ).split(",") if t.strip()
+]
 # Obergrenze gleichzeitig im Viewer geladener Entitäten. Der Graph kann tausende
 # Knoten haben; vis.js-Physik wird darüber unbrauchbar langsam und das HTML riesig.
 # Der /<proj>/nodes-Endpoint deckelt jedes Subset hierauf (Priorisierung: Knotengrad).
@@ -343,11 +364,15 @@ async def get_rag(project: str) -> LightRAG:
         proj_dir = PROJECTS_DIR / project
         proj_dir.mkdir(parents=True, exist_ok=True)
 
+        meta = _load_meta(project)
         # Regelwerk-Projekte (Flag in meta.json): ein Chunk = eine Klausel.
         extra = (
             {"chunking_func": _regelwerk_chunking}
-            if _load_meta(project).get("regelwerk") else {}
+            if meta.get("regelwerk") else {}
         )
+        # Projektspezifische Typen schlagen die globale Liste (ein Bauakten-
+        # Projekt braucht andere Typen als eine Vertragssammlung).
+        entity_types = meta.get("entity_types") or ENTITY_TYPES
         # workspace=project isoliert LightRAGs prozess-globalen shared_storage
         # (doc_status/full_docs/pipeline_status) je Projekt. Ohne das teilen sich
         # ALLE Projekte im selben Prozess den Default-Namespace "" -> ein Doc, das
@@ -363,7 +388,7 @@ async def get_rag(project: str) -> LightRAG:
             llm_model_name=LLM_MODEL,
             llm_model_max_async=MAX_ASYNC,
             chunk_token_size=CHUNK_TOKEN_SIZE,
-            addon_params={"language": GRAPH_LANGUAGE},
+            addon_params={"language": GRAPH_LANGUAGE, "entity_types": entity_types},
             # CPU-Embedder nicht überfluten + großzügiger Timeout (siehe oben).
             embedding_func_max_async=EMBED_MAX_ASYNC,
             default_embedding_timeout=EMBED_TIMEOUT,
@@ -414,6 +439,61 @@ def _load_flagged(project: str) -> dict:
 
 def _save_flagged(project: str, flagged: dict) -> None:
     _flagged_path(project).write_text(json.dumps(flagged, indent=1, ensure_ascii=False))
+
+
+# Fehlversuchszähler: doc_key -> {attempts, last_error, at}. Eigener Store, weil
+# LightRAGs doc_status den Zähler nicht überlebt: FAILED wird bei jedem ainsert
+# auf PENDING zurückgesetzt und error_msg dabei geleert.
+def _attempts_path(project: str) -> Path:
+    return PROJECTS_DIR / project / "ingest_attempts.json"
+
+
+def _load_attempts(project: str) -> dict:
+    p = _attempts_path(project)
+    return json.loads(p.read_text()) if p.exists() else {}
+
+
+def _save_attempts(project: str, attempts: dict) -> None:
+    _attempts_path(project).write_text(json.dumps(attempts, indent=1, ensure_ascii=False))
+
+
+async def _purge_failed_docs(project_id: str, rag, attempts: dict, flagged: dict) -> bool:
+    """Failure-Deckel: Dokumente, die MAX_DOC_ATTEMPTS-mal erfolglos durchliefen,
+    aus LightRAG entfernen und flaggen. Muss VOR dem ainsert laufen — LightRAG
+    zieht FAILED-Docs sonst automatisch wieder in die Pipeline und löscht dabei
+    error_msg, sodass ein einziges Poison-Doc jeden Folgelauf neu ausbremst und
+    die Ursache verschwindet. Liefert True, wenn flagged geändert wurde."""
+    if MAX_DOC_ATTEMPTS <= 0:
+        return False
+    over = [k for k, v in attempts.items() if v.get("attempts", 0) >= MAX_DOC_ATTEMPTS]
+    changed = False
+    for key in over:
+        if flagged.get(key, {}).get("decision") == "approve":
+            continue  # bewusst freigegeben -> weiter versuchen lassen
+        try:
+            async with _insert_lock:
+                await rag.adelete_by_doc_id(key)
+        except Exception:  # noqa: BLE001 — best effort, wie _purge_stuck_oversized
+            log.exception("adelete_by_doc_id(%s) fehlgeschlagen", key)
+            continue
+        info = attempts[key]
+        flagged[key] = {
+            "title": info.get("title", key)[:80],
+            "chars": info.get("chars", 0),
+            "est_chunks": 0,
+            "reason": (
+                f"{info.get('attempts')} Ingest-Versuche erfolglos "
+                f"(zuletzt: {info.get('last_error') or 'unbekannt'})"
+            ),
+            "decision": flagged.get(key, {}).get("decision", "open"),
+            "at": _now(),
+        }
+        changed = True
+        log.warning(
+            "Doc %s nach %d Fehlversuchen endgültig beiseitegelegt (%s)",
+            key, info.get("attempts"), info.get("last_error") or "unbekannt",
+        )
+    return changed
 
 
 async def _purge_stuck_oversized(project_id: str, rag) -> None:
@@ -602,6 +682,17 @@ def _doc_states(project: str, keys: list[str]) -> dict[str, str]:
     return {k: data.get(k, {}).get("status", "") for k in keys}
 
 
+def _doc_errors(project: str, keys: list[str]) -> dict[str, str]:
+    """LightRAGs error_msg je doc_key. Muss direkt nach dem ainsert gelesen
+    werden: der nächste Lauf setzt FAILED auf PENDING zurück und leert das Feld
+    (INGEST-FAILURE-ANALYSE.md: 'doc_status verschluckt den Fehlergrund')."""
+    p = PROJECTS_DIR / project / "kv_store_doc_status.json"
+    if not p.exists():
+        return {}
+    data = json.loads(p.read_text())
+    return {k: str(data.get(k, {}).get("error_msg") or "")[:200] for k in keys}
+
+
 def _prepare_doc(doc_key, text, clause_content, clause_title, is_regelwerk,
                  clause_store, manifest, flagged, counts):
     """Entscheidung für EIN Dokument (gemeinsam für beide Ingest-Pfade):
@@ -661,7 +752,8 @@ async def _poll_ingest_msg(project_id: str, stop: asyncio.Event):
         await asyncio.sleep(3)
 
 
-async def _run_ingest(project_id: str, rag, pending: list, counts: dict, manifest: dict) -> None:
+async def _run_ingest(project_id: str, rag, pending: list, counts: dict, manifest: dict,
+                      flagged: dict | None = None) -> None:
     """Hintergrund-Insert für beide Ingest-Pfade: myai-Wake-Hook, Pause/Stop,
     batchweises ainsert + per-Batch Manifest-Guard. Batchgröße INGEST_BATCH (=1 -> pro Doc).
     Pause/Stop greifen zwischen Batches; ein Batch wird immer ganz zu Ende geführt."""
@@ -681,6 +773,23 @@ async def _run_ingest(project_id: str, rag, pending: list, counts: dict, manifes
         # Altlasten-Guard vor dem ersten ainsert: hängende übergroße Docs raus,
         # sonst zieht LightRAG sie automatisch wieder in die Verarbeitung.
         await _purge_stuck_oversized(project_id, rag)
+        # Failure-Deckel ebenfalls VOR dem ersten ainsert (siehe _purge_failed_docs).
+        attempts = _load_attempts(project_id)
+        flags = _load_flagged(project_id) if flagged is None else flagged
+        if await _purge_failed_docs(project_id, rag, attempts, flags):
+            _save_flagged(project_id, flags)
+        # Ausgemusterte Docs nicht erneut einreichen.
+        dropped = {k for k, v in flags.items()
+                   if v.get("decision", "open") == "open" and k in attempts
+                   and attempts[k].get("attempts", 0) >= MAX_DOC_ATTEMPTS > 0}
+        if dropped:
+            pending = [it for it in pending if it[0] not in dropped]
+            total = len(pending)
+            # Status-Dict wird von _start_ingest erst nach dem ersten await
+            # geschrieben -> hier nur setzen, wenn es schon dieser Lauf ist.
+            st = _ingest_status.get(project_id)
+            if st is not None and st.get("state") == "running":
+                st["total"] = total
         # Wake-Hook im Hintergrund-Task (nicht im MCP-Handler) -> kein MCP-Timeout,
         # während myai bootet/qwen lädt. Bei Hook-Fehler bricht der Ingest ab.
         await _swap_begin()
@@ -736,15 +845,32 @@ async def _run_ingest(project_id: str, rag, pending: list, counts: dict, manifes
                 break
             # Guard: nur wirklich 'processed' Docs ins Manifest (ein Read je Batch).
             states = _doc_states(project_id, keys)
+            errors = _doc_errors(project_id, keys)
             wrote = False
+            attempts_dirty = False
             for k, _t, h in batch:
                 if states.get(k) == "processed":
                     manifest[k] = h
                     wrote = True
+                    if attempts.pop(k, None) is not None:  # Erfolg löscht die Historie
+                        attempts_dirty = True
                 else:
-                    log.warning("Doc %s nicht 'processed' nach ainsert — bleibt für Re-Ingest offen", k)
+                    # Fehlversuch zählen + Grund festhalten, solange er noch dasteht.
+                    rec = attempts.setdefault(k, {"attempts": 0})
+                    rec["attempts"] += 1
+                    rec["last_error"] = errors.get(k) or f"Status '{states.get(k) or 'unbekannt'}'"
+                    rec["chars"] = len(_t)
+                    rec["title"] = k
+                    rec["at"] = _now()
+                    attempts_dirty = True
+                    log.warning(
+                        "Doc %s nicht 'processed' nach ainsert (Versuch %d/%s): %s",
+                        k, rec["attempts"], MAX_DOC_ATTEMPTS or "∞", rec["last_error"],
+                    )
             if wrote:
                 _save_manifest(project_id, manifest)
+            if attempts_dirty:
+                _save_attempts(project_id, attempts)
             done += len(batch)
             _ingest_status[project_id]["done"] = done  # in-place: Poller-Feld bleibt
             i += len(batch)
@@ -784,7 +910,7 @@ def _start_ingest(project_id: str, rag, pending: list, counts: dict,
         )
     total = len(pending)
     _ingest_control.pop(project_id, None)  # evtl. altes pause/stop verwerfen
-    task = asyncio.create_task(_run_ingest(project_id, rag, pending, counts, manifest))
+    task = asyncio.create_task(_run_ingest(project_id, rag, pending, counts, manifest, flagged))
     _ingest_status[project_id] = {
         "state": "running", "done": 0, "total": total, "new": counts["new"],
         "updated": counts["updated"], "skipped": counts["skipped"], "at": _now(), "_task": task,
@@ -923,6 +1049,27 @@ async def ingest_control(project_id: str, action: str) -> str:
     return f"Projekt '{project_id}': '{action}' vorgemerkt — greift nach dem aktuellen Batch."
 
 
+def _file_to_text(f: Path, content: str) -> str:
+    """Metadaten-Header + Inhalt für Datei-Ingest — das Gegenstück zu
+    _doc_to_text. Ohne Header sind Datei-Dokumente im Graph systematisch
+    schlechter verankert als Paperless-Dokumente (dort liefern die kuratierten
+    Metadaten Datum/Absender/Typ als extrahierbare Fakten). Aus dem Dateisystem
+    ist weniger zu holen, aber Datum und Ordnerpfad sind echte Anhaltspunkte."""
+    rel = f.relative_to(INPUTS_DIR)
+    header = [f"Dokument: {f.stem}"]
+    try:
+        header.append(f"Datum: {datetime.fromtimestamp(f.stat().st_mtime).date().isoformat()}")
+    except OSError:  # Datei verschwunden/kein stat — Header bleibt ohne Datum
+        pass
+    # Ordnerpfad als Schlagworte: bei abgelegten Scans trägt die Ablagestruktur
+    # (z.B. inputs/versicherung/2024/) dieselbe Information wie Paperless-Tags.
+    parts = [seg for seg in rel.parts[:-1] if seg not in (".", "..")]
+    if parts:
+        header.append(f"Schlagworte: {', '.join(parts)}")
+    header.append(f"Quelle: Datei {rel}")
+    return "\n".join(header) + "\n\n" + content
+
+
 def _extract_text(f: Path) -> str | None:
     """Textinhalt einer Datei. PDF via pdftotext (poppler, im Container installiert).
     None = nicht unterstütztes Format."""
@@ -982,7 +1129,7 @@ async def ingest_directory(project_id: str, subpath: str = "", regelwerk: bool =
         if content is None:
             unsupported += 1
             continue
-        text = f"Dokument: {f.name}\n\n" + content
+        text = _file_to_text(f, content)
         doc_key = f"file:{f.relative_to(INPUTS_DIR)}"
         item = _prepare_doc(doc_key, text, content, f.name, is_regelwerk,
                             clause_store, manifest, flagged, counts)
