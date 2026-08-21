@@ -193,6 +193,72 @@ def test_doc_errors_reads_error_msg():
     _with_project(body)
 
 
+# ------------------------------------------------- 4: Verzeichnis-Scan im Thread
+def test_extract_text_survives_pdftotext_timeout():
+    """Hängendes pdftotext blockiert den Scan nicht, sondern gilt als 'nicht lesbar'."""
+    import subprocess
+    orig = subprocess.run
+    subprocess.run = lambda *a, **k: (_ for _ in ()).throw(
+        subprocess.TimeoutExpired(cmd="pdftotext", timeout=k.get("timeout", 0)))
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td) / "haengt.pdf"
+            f.write_bytes(b"%PDF-1.4")
+            assert server._extract_text(f) is None
+    finally:
+        subprocess.run = orig
+
+
+def test_ingest_directory_scans_off_the_event_loop():
+    """Der Scan darf den Event-Loop nicht blockieren und muss trotzdem
+    pending + unsupported korrekt liefern (Regression zum _scan-Refactor)."""
+    with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as pd:
+        server.INPUTS_DIR = Path(td)
+        server.PROJECTS_DIR = Path(pd)
+        (Path(pd) / "p").mkdir()
+        (Path(td) / "a.txt").write_text("Vertrag mit der Musterversicherung AG.")
+        (Path(td) / "b.md").write_text("Zweite Notiz.")
+        (Path(td) / "c.xlsx").write_bytes(b"nope")  # nicht unterstützt
+
+        captured = {}
+        orig_rag, orig_start = server.get_rag, server._start_ingest
+
+        async def _fake_rag(_p):
+            return object()
+
+        def _fake_start(project_id, rag, pending, counts, manifest, flagged, tail_note=""):
+            captured["pending"] = pending
+            captured["tail"] = tail_note
+            return "ok"
+
+        # Läuft der Scan im Thread, kommt der Ticker währenddessen dran.
+        ticks = 0
+
+        async def _ticker():
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0)
+                ticks += 1
+
+        async def body():
+            nonlocal ticks
+            t = asyncio.create_task(_ticker())
+            await asyncio.sleep(0)
+            await server.ingest_directory("p")
+            t.cancel()
+
+        server.get_rag, server._start_ingest = _fake_rag, _fake_start
+        try:
+            asyncio.run(body())
+        finally:
+            server.get_rag, server._start_ingest = orig_rag, orig_start
+
+        keys = sorted(k for k, _t, _h in captured["pending"])
+        assert keys == ["file:a.txt", "file:b.md"], keys
+        assert "1 ignoriert" in captured["tail"], captured["tail"]
+        assert ticks > 0, "Scan lief im Event-Loop statt in einem Thread"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

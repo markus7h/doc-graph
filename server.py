@@ -94,6 +94,10 @@ CHUNK_TOKEN_SIZE = int(os.environ.get("CHUNK_TOKEN_SIZE", "1200"))
 # bei vielen kleinen Docs aus; Pause/Stop greifen zwischen Batches. =1 stellt das
 # alte, feingranulare Verhalten (Cancel/Fortschritt pro Doc) wieder her.
 INGEST_BATCH = int(os.environ.get("INGEST_BATCH", "5"))
+# Deckel je pdftotext-Aufruf beim Verzeichnis-Ingest. Ohne Timeout hängt ein
+# kaputtes/riesiges PDF den Scan-Thread unbegrenzt auf; das Doc wird dann
+# übersprungen wie ein nicht unterstütztes Format.
+PDFTOTEXT_TIMEOUT = int(os.environ.get("PDFTOTEXT_TIMEOUT", "120"))
 # Sicherheits-Guard: Dokumente über dieser Textlänge (Zeichen) werden NICHT
 # ingestiert, sondern geflaggt (ingest_flagged.json) und dem Nutzer zur Prüfung
 # vorgelegt. Schützt vor Datenmüll wie einem 50-MB-CSV-Export, der zehntausende
@@ -798,6 +802,7 @@ async def _run_ingest(project_id: str, rag, pending: list, counts: dict, manifes
     Pause/Stop greifen zwischen Batches; ein Batch wird immer ganz zu Ende geführt."""
     total = len(pending)
     done = 0
+    t0 = time.perf_counter()  # nach dem Wake-Hook neu gesetzt, s. u.
     stop = asyncio.Event()
     poller = asyncio.create_task(_poll_ingest_msg(project_id, stop))
     # ponytail-Invariante: swapped == genau ein offenes _swap_begin. Jeder begin
@@ -806,7 +811,8 @@ async def _run_ingest(project_id: str, rag, pending: list, counts: dict, manifes
 
     def _final(state):  # Endstatus mit aktuellem Zähler (done wird live gelesen)
         return {"state": state, "done": done, "total": total, "new": counts["new"],
-                "updated": counts["updated"], "skipped": counts["skipped"], "at": _now()}
+                "updated": counts["updated"], "skipped": counts["skipped"],
+                "elapsed_min": round((time.perf_counter() - t0) / 60, 1), "at": _now()}
 
     try:
         # Altlasten-Guard vor dem ersten ainsert: hängende übergroße Docs raus,
@@ -833,6 +839,9 @@ async def _run_ingest(project_id: str, rag, pending: list, counts: dict, manifes
         # während myai bootet/qwen lädt. Bei Hook-Fehler bricht der Ingest ab.
         await _swap_begin()
         swapped = True
+        # Erst ab hier messen: der Hook kann myai booten (bis 5 min/Service) und
+        # würde sonst die Durchsatzzahlen verfälschen.
+        t0 = time.perf_counter()
         stopped = False
         i = 0
         while i < len(pending):
@@ -861,6 +870,7 @@ async def _run_ingest(project_id: str, rag, pending: list, counts: dict, manifes
             # hinterlassen; der _doc_states-Guard unten schützt das Manifest — ein
             # gecanceltes Doc bleibt 'nicht processed' und wird beim Re-Ingest neu geholt.
             interrupted = None
+            t_batch = time.perf_counter()
             async with _insert_lock:
                 ins = asyncio.create_task(rag.ainsert(texts, ids=keys))
                 while True:
@@ -882,6 +892,11 @@ async def _run_ingest(project_id: str, rag, pending: list, counts: dict, manifes
                 _ingest_status[project_id] = _final("stopped")
                 stopped = True
                 break
+            # Einzige Durchsatz-Messung der Pipeline: Engpass ist die LLM-Extraktion
+            # (1 Call je Chunk), ohne diese Zeile lässt sich kein Tuning belegen.
+            dt = time.perf_counter() - t_batch
+            log.info("Ingest %s Batch: %d Docs / %d Zeichen in %.1fs (%.1fs pro Doc)",
+                     project_id, len(batch), sum(len(t) for t in texts), dt, dt / len(batch))
             # Guard: nur wirklich 'processed' Docs ins Manifest (ein Read je Batch).
             states = _doc_states(project_id, keys)
             errors = _doc_errors(project_id, keys)
@@ -911,7 +926,11 @@ async def _run_ingest(project_id: str, rag, pending: list, counts: dict, manifes
             if attempts_dirty:
                 _save_attempts(project_id, attempts)
             done += len(batch)
-            _ingest_status[project_id]["done"] = done  # in-place: Poller-Feld bleibt
+            per_doc = (time.perf_counter() - t0) / done
+            st = _ingest_status[project_id]
+            st["done"] = done  # in-place: Poller-Feld bleibt
+            st["sec_per_doc"] = round(per_doc, 1)
+            st["eta_min"] = round((total - done) * per_doc / 60, 1)
             i += len(batch)
         if not stopped:
             _ingest_status[project_id] = _final("done")
@@ -1116,10 +1135,14 @@ def _extract_text(f: Path) -> str | None:
     if suffix in (".txt", ".md"):
         return f.read_text(errors="replace")
     if suffix == ".pdf":
-        r = subprocess.run(
-            ["pdftotext", "-layout", str(f), "-"],
-            capture_output=True, text=True,
-        )
+        try:
+            r = subprocess.run(
+                ["pdftotext", "-layout", str(f), "-"],
+                capture_output=True, text=True, timeout=PDFTOTEXT_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            log.warning("pdftotext Timeout (%ds) für %s", PDFTOTEXT_TIMEOUT, f)
+            return None
         if r.returncode != 0:
             log.warning("pdftotext fehlgeschlagen für %s: %s", f, r.stderr[:200])
             return None
@@ -1159,21 +1182,27 @@ async def ingest_directory(project_id: str, subpath: str = "", regelwerk: bool =
     manifest = _load_manifest(project_id)
     flagged = _load_flagged(project_id)
     counts = {"new": 0, "updated": 0, "skipped": 0, "flagged_new": 0}
-    pending, unsupported = [], 0
 
-    for f in sorted(base.rglob("*")):
-        if not f.is_file():
-            continue
-        content = _extract_text(f)
-        if content is None:
-            unsupported += 1
-            continue
-        text = _file_to_text(f, content)
-        doc_key = f"file:{f.relative_to(INPUTS_DIR)}"
-        item = _prepare_doc(doc_key, text, content, f.name, is_regelwerk,
-                            clause_store, manifest, flagged, counts)
-        if item:
-            pending.append(item)
+    def _scan():
+        items, skipped = [], 0
+        for f in sorted(base.rglob("*")):
+            if not f.is_file():
+                continue
+            content = _extract_text(f)
+            if content is None:
+                skipped += 1
+                continue
+            text = _file_to_text(f, content)
+            doc_key = f"file:{f.relative_to(INPUTS_DIR)}"
+            item = _prepare_doc(doc_key, text, content, f.name, is_regelwerk,
+                                clause_store, manifest, flagged, counts)
+            if item:
+                items.append(item)
+        return items, skipped
+
+    # rglob + pdftotext blockieren je PDF Sekunden; im Event-Loop stünde solange
+    # der komplette MCP-Server (auch Queries und andere Projekte).
+    pending, unsupported = await asyncio.to_thread(_scan)
 
     _save_flagged(project_id, flagged)
     if is_regelwerk and clause_store:
