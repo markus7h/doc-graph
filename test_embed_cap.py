@@ -140,6 +140,66 @@ def test_embed_func_kein_retry_bei_anderem_fehler():
     assert len(client.sent) == 1, "es haette kein Retry stattfinden duerfen"
 
 
+# ------------------------------------------------------ 3b: Batching der Menge
+def _zaehl_ok(werte):
+    """Antwort mit unterscheidbaren Vektoren, um Reihenfolge pruefen zu koennen."""
+    return _Resp(200, {"data": [{"embedding": [float(v)] * server.EMBED_DIM}
+                                for v in werte]})
+
+
+def test_embed_func_zerlegt_grosse_mengen():
+    """EMBED_MAX_TOKENS deckelt die Laenge, nicht die Menge. Ohne Portionierung
+    ging beim Merge alles in EINEM Request raus — gemessen 100s fuer 1024 Inputs,
+    mal EMBED_MAX_ASYNC parallel ueber dem Timeout. Dann bricht der Server die
+    Verbindung ab und LightRAG haelt die ganze Pipeline an."""
+    n = server.EMBED_BATCH * 2 + 7
+    rest = n - server.EMBED_BATCH * 2
+    client = _Client([_ok(server.EMBED_BATCH), _ok(server.EMBED_BATCH), _ok(rest)])
+    server._embed_client = client
+    out = asyncio.run(server._embed_func(["text"] * n))
+
+    assert len(client.sent) == 3, f"{len(client.sent)} Requests statt 3"
+    assert [len(p) for p in client.sent] == [server.EMBED_BATCH,
+                                             server.EMBED_BATCH, rest]
+    assert all(len(p) <= server.EMBED_BATCH for p in client.sent)
+    assert out.shape == (n, server.EMBED_DIM), out.shape
+
+
+def test_embed_func_behaelt_reihenfolge_ueber_haeppchen():
+    """LightRAG ordnet Vektoren positionsweise zu — verrutscht die Reihenfolge,
+    haengen die Embeddings an den falschen Entitaeten."""
+    n = server.EMBED_BATCH + 3
+    client = _Client([_zaehl_ok(range(server.EMBED_BATCH)),
+                      _zaehl_ok(range(server.EMBED_BATCH, n))])
+    server._embed_client = client
+    out = asyncio.run(server._embed_func([f"t{i}" for i in range(n)]))
+
+    assert out.shape == (n, server.EMBED_DIM), out.shape
+    assert [row[0] for row in out] == [float(i) for i in range(n)], "Reihenfolge verrutscht"
+    # Die Eingaben muessen ebenfalls in Originalreihenfolge portioniert sein
+    assert client.sent[0][0] == "t0" and client.sent[1][0] == f"t{server.EMBED_BATCH}"
+
+
+def test_embed_func_kleine_menge_bleibt_ein_request():
+    """Kein unnoetiges Zerstueckeln — der Normalfall bleibt ein einziger Request."""
+    client = _Client([_ok(3)])
+    server._embed_client = client
+    asyncio.run(server._embed_func(["a", "b", "c"]))
+    assert len(client.sent) == 1, "kleine Mengen duerfen nicht aufgeteilt werden"
+
+
+def test_retry_wirkt_innerhalb_eines_haeppchens():
+    """Der too-large-Retry muss pro Haeppchen greifen, nicht nur beim ersten."""
+    n = server.EMBED_BATCH + 1
+    client = _Client([_ok(server.EMBED_BATCH), _too_large(), _ok(1)])
+    server._embed_client = client
+    out = asyncio.run(server._embed_func(["abcdefgh"] * n))
+
+    assert len(client.sent) == 3, f"{len(client.sent)} Requests statt 3"
+    assert client.sent[2][0] == "abcd", client.sent[2]
+    assert out.shape == (n, server.EMBED_DIM), out.shape
+
+
 # ------------------------------------------- 4: Konsistenz mit LightRAG-Setup
 def test_max_token_size_matcht_cap():
     """max_token_size in get_rag muss EMBED_MAX_TOKENS sein, nicht bge-m3s 8192."""

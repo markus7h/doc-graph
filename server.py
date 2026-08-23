@@ -80,6 +80,17 @@ EMBED_TIMEOUT = int(os.environ.get("EMBED_TIMEOUT", "180"))
 # Entity-/Relation-Beschreibungen, die LightRAG frei zusammenbaut — die kann
 # CHUNK_TOKEN_SIZE prinzipiell nicht deckeln. Muss <= -ub des Servers sein.
 EMBED_MAX_TOKENS = int(os.environ.get("EMBED_MAX_TOKENS", "2048"))
+# Maximale ANZAHL Inputs pro Embedding-Request. EMBED_MAX_TOKENS deckelt die
+# Laenge jedes einzelnen Inputs, nicht die Menge — und LightRAG uebergibt beim
+# Merge alles auf einmal. In einem gefuellten Index sind das schnell vierstellig
+# viele Entity-/Relation-Beschreibungen: gemessen 1024 Inputs a 6144 Zeichen =
+# 100s fuer EINEN Request, mal EMBED_MAX_ASYNC parallel deutlich ueber
+# EMBED_TIMEOUT. Der Server bricht dann die Verbindung ab ("Server disconnected
+# without sending a response"), LightRAG haelt die GESAMTE Pipeline an und alle
+# noch offenen Dokumente bleiben liegen (2026-08-23: 8 Docs, davon 6 nach drei
+# Versuchen endgueltig beiseitegelegt). Haeppchenweise senden haelt jeden
+# Request im Sekundenbereich.
+EMBED_BATCH = int(os.environ.get("EMBED_BATCH", "64"))
 # Timeout (s) für einen einzelnen LLM-Call an den llama-server. Bei CPU-Offload
 # (niedriger t/s) reißen dichte Chunks den Default -> hier hochsetzen. Der
 # eigentliche Engpass bleibt der Throughput (GPU), das ist nur der Deckel.
@@ -174,13 +185,8 @@ def _cap_embed_input(text: str) -> str:
     return text[:limit]
 
 
-async def _embed_func(texts):
-    # httpx-Timeout >= LightRAGs default_embedding_timeout, sonst schlägt der
-    # Client zu, bevor LightRAG selbst tolerieren würde.
-    global _embed_client
-    if _embed_client is None:
-        _embed_client = httpx.AsyncClient(timeout=EMBED_TIMEOUT)
-    payload = [_cap_embed_input(t) for t in texts]
+async def _embed_post(payload):
+    """Ein Embedding-Request. Erwartet bereits gekappte und portionierte Inputs."""
     r = await _embed_client.post(
         f"{EMBED_BASE_URL}/embeddings",
         json={"model": EMBED_MODEL, "input": payload},
@@ -190,15 +196,31 @@ async def _embed_func(texts):
     # mit kleinerem -ub als EMBED_MAX_TOKENS, oder die Zeichen-Heuristik lag
     # daneben), nochmal halbiert versuchen statt den ganzen Lauf zu verlieren.
     if r.status_code == 500 and "too large" in r.text:
-        payload = [t[: len(t) // 2] for t in payload]
         r = await _embed_client.post(
             f"{EMBED_BASE_URL}/embeddings",
-            json={"model": EMBED_MODEL, "input": payload},
+            json={"model": EMBED_MODEL,
+                  "input": [t[: len(t) // 2] for t in payload]},
             headers={"Authorization": f"Bearer {LLM_API_KEY}"},
         )
     r.raise_for_status()
-    data = r.json()["data"]
-    return np.array([d["embedding"] for d in data], dtype=np.float32)
+    return [d["embedding"] for d in r.json()["data"]]
+
+
+async def _embed_func(texts):
+    # httpx-Timeout >= LightRAGs default_embedding_timeout, sonst schlägt der
+    # Client zu, bevor LightRAG selbst tolerieren würde.
+    global _embed_client
+    if _embed_client is None:
+        _embed_client = httpx.AsyncClient(timeout=EMBED_TIMEOUT)
+    payload = [_cap_embed_input(t) for t in texts]
+    # Sequenziell in Haeppchen: LightRAG faehrt ohnehin EMBED_MAX_ASYNC Aufrufe
+    # parallel, zusaetzliche Nebenlaeufigkeit hier wuerde den CPU-Embedder nur
+    # erneut ueberfahren. Reihenfolge bleibt erhalten — LightRAG ordnet die
+    # Vektoren positionsweise den Eingaben zu.
+    vektoren = []
+    for i in range(0, len(payload), EMBED_BATCH):
+        vektoren.extend(await _embed_post(payload[i:i + EMBED_BATCH]))
+    return np.array(vektoren, dtype=np.float32)
 
 PAPERLESS_URL = os.environ.get("PAPERLESS_URL", "").rstrip("/")
 PAPERLESS_TOKEN = os.environ.get("PAPERLESS_TOKEN", "")
