@@ -7,15 +7,38 @@ services:
       - "5775:5775"   # MCP (streamable HTTP)
       - "5776:5776"   # Graph-Viewer (statisches HTML)
     environment:
-      # --- LLM: qwen3-14B dauerhaft auf myai (llm-stack, docker-compose.myai.yml),
-      # für Ingest UND Query — ingest-begin.sh weckt myai vor dem Ingest per WoL.
-      # Antworten auf Queries liefert ohnehin meist Claude via only_context. ---
-      LLM_BASE_URL: ${LLM_BASE_URL:-http://myai:11436/v1}
+      # --- LLM + Embeddings ueber den llm-stack-Router (LiteLLM auf mystorage),
+      # fuer Ingest UND Query. Dahinter zwei Backends: myai als Basis, myubuntu
+      # als Burst-Host mit RTX 5080 (gemessen 86,9 gegen 36,7 tok/s). Der Router
+      # verteilt gewichtet und faengt ab, wenn ein Host wegfaellt — myai schlaeft
+      # 23:00-06:00, myubuntu ist ein Desktop und darf jederzeit weg sein.
+      #
+      # mystorage.LAN, nicht mystorage: Docker erbt den /etc/hosts-Eintrag des
+      # Hosts fuer dessen eigenen Namen, im Container loest "mystorage" damit auf
+      # 127.0.1.1 auf und der Call landet im Container selbst. Anders als bei
+      # 'paperless' loest der .lan-Name hier auf IPv4 UND IPv6 auf; der
+      # IPv6-Versuch faellt in ~20 ms auf IPv4 zurueck.
+      #
+      # Zurueck auf http://myai:11436/v1 bzw. :11435/v1 ist jederzeit moeglich —
+      # die direkten Ports bleiben auf beiden GPU-Hosts offen.
+      LLM_BASE_URL: ${LLM_BASE_URL:-http://mystorage.lan:11437/v1}
       LLM_MODEL: ${LLM_MODEL:-qwen3:14b}
-      # --- Embeddings: bge-m3 dauerhaft auf myais RTX 2060 (llm-stack) ---
-      EMBED_BASE_URL: ${EMBED_BASE_URL:-http://myai:11435/v1}
+      EMBED_BASE_URL: ${EMBED_BASE_URL:-http://mystorage.lan:11437/v1}
       EMBED_MODEL: ${EMBED_MODEL:-bge-m3}
       EMBED_DIM: ${EMBED_DIM:-1024}
+      # Master-Key des Routers — er laeuft mit einem, weil seine Admin-UI ihn
+      # verlangt, und antwortet ohne Header mit 401. server.py schickt ihn schon
+      # immer mit (LLM- wie Embedding-Pfad), bisher nur an einen llama-server,
+      # den er nicht interessiert hat.
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      # 1800 statt der Code-Default 2048: der Zeichen-Cap in _cap_embed_input
+      # rechnet EMBED_MAX_TOKENS * 3 und liegt damit exakt auf llama.cpps
+      # -ub 2048 — ohne Reserve. Ein Ueberlauf quittiert der Server mit HTTP 500
+      # ("input ... is too large"), was der Router nicht von einem toten Backend
+      # unterscheiden kann: er wuerde den gesunden Host in den Cooldown schicken.
+      # 1800 gibt ~12 % Luft; die Halbierungs-Notbremse in _embed_post_einmal
+      # bleibt als zweite Verteidigungslinie.
+      EMBED_MAX_TOKENS: ${EMBED_MAX_TOKENS:-1800}
       # --- Paperless-NGX (Dokumentquelle): direkt ueber dessen Compose-Netz
       # web_net als Container-Alias 'webserver'. NICHT ueber https://paperless —
       # der LAN-Name loest nur auf IPv6 auf, und die Docker-Bridge kann kein IPv6
@@ -30,7 +53,11 @@ services:
       # --- Backup: tar.gz der Projekte ins gemountete Ziel, Zeitplan in der Web-UI ---
       BACKUP_DIR: /backups
       MAX_BACKUPS: ${MAX_BACKUPS:-10}
-      MAX_ASYNC: ${MAX_ASYNC:-2}
+      # 3 statt 2: hinter dem Router liegen jetzt drei qwen-Slots (myubuntu 2x
+      # nach Gewicht, myai 1x) statt einem. Ist myubuntu aus, serialisiert myai
+      # die Calls wie bisher — mehr Nebenlaeufigkeit schadet dann nicht, sie
+      # wartet nur.
+      MAX_ASYNC: ${MAX_ASYNC:-3}
       # Sicherheits-Guard: Docs über dieser Zeichenzahl werden geflaggt statt
       # ingestiert (siehe README). 400k (~166 Chunks) lässt große Fachdokumente
       # durch, fängt aber Kalender-/CSV-Exporte (490k+).

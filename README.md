@@ -43,13 +43,21 @@ das schon in Projekt A liegt, in Projekt B still als Duplikat verworfen.
 ## Modell: geteilter llm-stack
 
 LLM und Embeddings laufen über den **geteilten llm-stack** (eigenes
-Compose-Projekt, Repo `llm-stack`), seit dem myai-Split komplett auf myai:
-Extraktion UND Queries via `http://myai:11436` (`llm-qwen`/`qwen3-14b`, voll
-auf myais RTX 3070+2060; qwen-only nach A/B-Test 2026-08-03 — auf Augenhöhe
-bis besser als mistral bei deutschen Antworten) + Embeddings via
-`http://myai:11435` (`bge-m3`, 1024-dim, dauerhaft auf myais RTX 2060 — immer
-GPU-schnell, keine CPU-`Worker execution timeout`-Failures). myai darf
-schlafen: `ingest-begin.sh` weckt ihn per Wake-on-LAN vor jedem Ingest.
+Compose-Projekt, Repo `llm-stack`), seit 2026-08-23 über dessen LiteLLM-Router:
+Extraktion, Queries UND Embeddings via `http://mystorage.lan:11437/v1`
+(`qwen3-14b` + `bge-m3`, 1024-dim; qwen-only nach A/B-Test 2026-08-03 — auf
+Augenhöhe bis besser als mistral bei deutschen Antworten).
+
+Hinter dem Router liegen **zwei** GPU-Hosts: myai (RTX 3070+2060, Layer-Split,
+36,7 tok/s) als Basis und myubuntu (RTX 5080, Modell am Stück, 86,9 tok/s) als
+Burst. Der Router verteilt gewichtet und nimmt einen ausgefallenen Host
+innerhalb eines Requests aus der Rotation — myai schläft 23:00–06:00, myubuntu
+ist ein Desktop-Rechner und darf jederzeit weg sein. Für den Ingest heißt das:
+läuft myubuntu mit, geht es rund dreimal so schnell; läuft es nicht, ist alles
+wie vorher. `ingest-begin.sh` weckt myai weiterhin vor jedem Ingest.
+
+Der Router braucht `LLM_API_KEY` (Master-Key) — `server.py` schickt ihn im LLM-
+wie im Embedding-Pfad ohnehin schon mit.
 
 Der frühere GPU-Swap auf myubuntu (nur EIN Chat-Modell in 16 GB, Wechsel per
 stop/start + Alias-Trick) ist damit obsolet. doc-graph selbst braucht seit dem
@@ -99,8 +107,11 @@ Der Daten-Mount in `docker-compose.yml` ist ein **absoluter Pfad**
 `./data` mounten — der Index wäre „weg" und alle Queries lieferten no-context.
 Der kanonische Datenort ist immer das Deploy-Verzeichnis.
 
-LLM (`myai:11436`), Embedder (`myai:11435`) und `paperless` (NGX) kommen alle
-via LAN-DNS — kein Docker-Netz zwischen den Stacks nötig. Bei abweichendem
+LLM und Embedder (`mystorage.lan:11437`) und `paperless` (NGX) kommen alle
+via LAN-DNS — kein Docker-Netz zwischen den Stacks nötig. **`mystorage.lan`,
+nicht `mystorage`**: Docker erbt den `/etc/hosts`-Eintrag des Hosts für dessen
+eigenen Namen, im Container löst der kurze Name auf `127.0.1.1` auf und der
+Call landet im Container selbst. Bei abweichendem
 Setup `LLM_BASE_URL`/`EMBED_BASE_URL` bzw.
 `PAPERLESS_URL=https://<host>/` (bzw. `http://<IP>:8010`) setzen. Der
 compose-Default ist `https://paperless/`; der Client akzeptiert das
@@ -370,8 +381,12 @@ von „was behauptet die Gegenseite" (query auf dem Fall-Projekt).
   `model_check_report.md` (`EMPFEHLUNG: bleiben` / `EMPFEHLUNG: wechseln zu <tag>`).
 - **EMBED_DIM darf sich nachträglich nicht ändern** — Embedding-Modell pro
   Projekt festnageln, sonst Index neu aufbauen.
-- **`EMBED_MAX_TOKENS`** (default 2048): Obergrenze pro Embedding-Input, muss
-  `<=` dem `-ub` des llama-servers sein (llm-stack: 2048). Längere Inputs
+- **`EMBED_MAX_TOKENS`** (default 1800): Obergrenze pro Embedding-Input, muss
+  `<=` dem `-ub` des llama-servers sein (llm-stack: 2048 auf beiden Hosts).
+  1800 statt 2048, seit die Embeddings über den Router laufen: der Zeichen-Cap
+  rechnet `EMBED_MAX_TOKENS * 3` und läge bei 2048 exakt auf der Grenze. Ein
+  Überlauf-500 ist für den Router nicht von einem toten Backend zu
+  unterscheiden — er würde den gesunden Host in den Cooldown schicken. Längere Inputs
   quittiert der Server mit HTTP 500 (`input ... is too large`), woraufhin
   LightRAG den **gesamten** Ingest-Lauf abbricht — nicht nur das betroffene
   Dokument. Der Cap greift für alles, was eingebettet wird: Chunks *und* die
@@ -414,13 +429,13 @@ von „was behauptet die Gegenseite" (query auf dem Fall-Projekt).
   niedrigem Throughput hochsetzen. **Achtung:** löst nur das Symptom — der Engpass bei
   dichten Docs ist der GPU-Throughput (z. B. ~5,8 t/s im CPU-Offload); dauerhaft hilft
   nur Voll-GPU-Extraktion (qwen@myai), nicht ein höherer Timeout.
-- **`MAX_ASYNC`** (default 2): parallele LLM-Calls. **Wirkt derzeit nicht** — der
-  llama-server läuft mit `-np 1` (ein Slot, `llm-stack/docker-compose.yml`), alle
-  Calls serialisieren dort unabhängig von diesem Wert. `-np 1` ist bewusst gewählt
-  (LightRAG-Query-Prompts sprengen mit ~14k Token einen 12288er-Slot); Preis laut
-  llm-stack-Notiz: ~35 % Ingest-Durchsatz. Wer `-np` erhöht, muss `MAX_ASYNC ≥ -np`
-  mitziehen. Bei dichten Beständen / knapper GPU auf `1` setzen, damit ein
-  Poison-Doc nicht den ganzen Durchsatz frisst.
+- **`MAX_ASYNC`** (default 3): parallele LLM-Calls. Jeder GPU-Host läuft mit
+  `-np 1` (ein Slot; bewusst so, LightRAG-Query-Prompts sprengen mit ~14k Token
+  einen 12288er-Slot), aber hinter dem Router sind es zwei Hosts — parallele
+  Calls verteilen sich also auf beide statt zu serialisieren. Ist myubuntu aus,
+  wartet der Überschuss auf myais einem Slot; das schadet nicht. Bei dichten
+  Beständen / knapper GPU auf `1` setzen, damit ein Poison-Doc nicht den ganzen
+  Durchsatz frisst.
 - **`EMBED_MAX_ASYNC`** (default 3) / **`EMBED_TIMEOUT`** (default 180 s):
   Robustheit des Embedding-Pfads. Historisch lief `bge-m3` auf CPU; die
   LightRAG-Defaults (`max_async=8`, `timeout=30 s`) überfluteten ihn →
