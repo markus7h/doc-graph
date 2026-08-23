@@ -18,7 +18,7 @@ DEPLOY_HOST=${DEPLOY_HOST-$( [ "$(hostname)" = "$TARGET" ] && echo "" || echo "$
 
 # Nur Code/Build-Dateien. docker-compose.yml und .env bleiben Deploy-eigen
 # (lokale Mounts/Secrets) und werden bewusst NICHT überschrieben.
-FILES=(server.py graphview.py clauses.py ingest-begin.sh ingest-end.sh Dockerfile requirements.txt test_backup.py test_ingest_extras.py test_embed_cap.py)
+FILES=(server.py config.py backup.py graphview.py clauses.py ingest-begin.sh ingest-end.sh Dockerfile requirements.txt test_backup.py test_ingest_extras.py test_embed_cap.py)
 
 # Kommando auf dem Zielhost ausführen — lokal direkt, sonst über ssh.
 run() {

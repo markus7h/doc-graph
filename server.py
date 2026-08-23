@@ -51,7 +51,11 @@ from lightrag.llm.openai import openai_complete_if_cache
 from lightrag.utils import EmbeddingFunc
 from lightrag.kg.shared_storage import initialize_pipeline_status, get_namespace_data
 
+import backup
 from clauses import norm_clause, split_clauses
+from config import (
+    BACKUP_DIR, INPUTS_DIR, MAX_BACKUPS, PROJECTS_DIR, log, now, validate_project,
+)
 
 # ----------------------------------------------------------------------------
 # Konfiguration
@@ -225,12 +229,8 @@ async def _embed_func(texts):
 PAPERLESS_URL = os.environ.get("PAPERLESS_URL", "").rstrip("/")
 PAPERLESS_TOKEN = os.environ.get("PAPERLESS_TOKEN", "")
 
-PROJECTS_DIR = Path(os.environ.get("PROJECTS_DIR", "/data/projects"))
-INPUTS_DIR = Path("/data/inputs")
 # Backup-Ziel (gemountet, i.d.R. OneDrive/doc-graph). Rotation auf die letzten
 # MAX_BACKUPS Archive; Intervall/An-Aus kommen aus .config.json (via Web-UI).
-BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", "/backups"))
-MAX_BACKUPS = int(os.environ.get("MAX_BACKUPS", "10"))
 MCP_PORT = int(os.environ.get("MCP_PORT", "5775"))
 VIEWER_PORT = int(os.environ.get("VIEWER_PORT", "5776"))
 # Default "::": der Container ist unter seiner IPv6 aus fd00:24:9:68::/64
@@ -240,10 +240,7 @@ VIEWER_BIND = os.environ.get("VIEWER_BIND", "::")
 # Hostname, unter dem der Viewer vom Browser erreichbar ist (für die zurückgegebene URL)
 PUBLIC_HOST = os.environ.get("PUBLIC_HOST", "localhost")
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-log = logging.getLogger("doc-graph")
 
-PROJECT_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,64}$")
 
 # ----------------------------------------------------------------------------
 # LightRAG-Instanzverwaltung (eine Instanz pro Projekt, lazy)
@@ -278,6 +275,13 @@ _insert_lock = asyncio.Lock()
 SWAP_ENABLED = os.environ.get("INGEST_SWAP", "1") == "1"
 _swap_lock = asyncio.Lock()
 _active_ingests = 0
+
+# backup.py kennt server.py nicht (kein Zyklus). Die beiden Rueckfragen, die es
+# an den laufenden Dienst hat, werden hier eingehaengt — auf Modulebene, nicht
+# erst in __main__: der Viewer-Thread kann ein Restore ausloesen, bevor main
+# fertig ist, und braucht instanz_verwerfen dann schon.
+backup.ingest_laeuft = lambda: _active_ingests > 0
+backup.instanz_verwerfen = lambda project: _instances.pop(project, None)
 
 def _run_hook(script: str) -> None:
     p = Path(__file__).parent / script
@@ -406,16 +410,10 @@ def _ensure_regelwerk(project_id: str) -> None:
         _instances.pop(project_id, None)
 
 
-def _validate_project(project: str) -> str:
-    if not PROJECT_RE.match(project):
-        raise ValueError(
-            f"Ungültiger Projektname '{project}' (erlaubt: a-z, 0-9, _, -)"
-        )
-    return project
 
 
 async def get_rag(project: str) -> LightRAG:
-    project = _validate_project(project)
+    project = validate_project(project)
     if project in _instances:
         return _instances[project]
 
@@ -551,7 +549,7 @@ async def _purge_failed_docs(project_id: str, rag, attempts: dict, flagged: dict
                 f"(zuletzt: {info.get('last_error') or 'unbekannt'})"
             ),
             "decision": flagged.get(key, {}).get("decision", "open"),
-            "at": _now(),
+            "at": now(),
         }
         changed = True
         log.warning(
@@ -598,7 +596,7 @@ async def _purge_stuck_oversized(project_id: str, rag) -> None:
             "reason": f"übergroß, aus hängender LightRAG-Pipeline entfernt (>{MAX_DOC_CHARS})",
             # decision behalten (z.B. 'ignore'), sonst 'open' = wartet auf Nutzer.
             "decision": flagged.get(key, {}).get("decision", "open"),
-            "at": _now(),
+            "at": now(),
         }
         changed = True
         log.warning("Poison-Doc %s (%d Zeichen) aus LightRAG entfernt und geflaggt", key, clen)
@@ -621,8 +619,6 @@ def _hash(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
-def _now() -> str:
-    return time.strftime("%Y-%m-%d %H:%M:%S")
 
 
 # ----------------------------------------------------------------------------
@@ -787,7 +783,7 @@ def _prepare_doc(doc_key, text, clause_content, clause_title, is_regelwerk,
                 "est_chunks": len(text) // max(1, CHUNK_TOKEN_SIZE * 4),
                 "reason": f"Text {len(text)} Zeichen > MAX_DOC_CHARS ({MAX_DOC_CHARS})",
                 "decision": "open",
-                "at": _now(),
+                "at": now(),
             }
             counts["flagged_new"] += 1
             return None
@@ -834,7 +830,7 @@ async def _run_ingest(project_id: str, rag, pending: list, counts: dict, manifes
     def _final(state):  # Endstatus mit aktuellem Zähler (done wird live gelesen)
         return {"state": state, "done": done, "total": total, "new": counts["new"],
                 "updated": counts["updated"], "skipped": counts["skipped"],
-                "elapsed_min": round((time.perf_counter() - t0) / 60, 1), "at": _now()}
+                "elapsed_min": round((time.perf_counter() - t0) / 60, 1), "at": now()}
 
     try:
         # Altlasten-Guard vor dem ersten ainsert: hängende übergroße Docs raus,
@@ -937,7 +933,7 @@ async def _run_ingest(project_id: str, rag, pending: list, counts: dict, manifes
                     rec["last_error"] = errors.get(k) or f"Status '{states.get(k) or 'unbekannt'}'"
                     rec["chars"] = len(_t)
                     rec["title"] = k
-                    rec["at"] = _now()
+                    rec["at"] = now()
                     attempts_dirty = True
                     log.warning(
                         "Doc %s nicht 'processed' nach ainsert (Versuch %d/%s): %s",
@@ -959,7 +955,7 @@ async def _run_ingest(project_id: str, rag, pending: list, counts: dict, manifes
     except Exception as e:  # noqa: BLE001 — Status festhalten, nicht crashen
         log.exception("Ingest fehlgeschlagen für %s", project_id)
         _ingest_status[project_id] = {
-            "state": "error", "error": str(e), "done": done, "total": total, "at": _now(),
+            "state": "error", "error": str(e), "done": done, "total": total, "at": now(),
         }
     finally:
         stop.set()
@@ -993,7 +989,7 @@ def _start_ingest(project_id: str, rag, pending: list, counts: dict,
     task = asyncio.create_task(_run_ingest(project_id, rag, pending, counts, manifest, flagged))
     _ingest_status[project_id] = {
         "state": "running", "done": 0, "total": total, "new": counts["new"],
-        "updated": counts["updated"], "skipped": counts["skipped"], "at": _now(), "_task": task,
+        "updated": counts["updated"], "skipped": counts["skipped"], "at": now(), "_task": task,
     }
     return (
         f"Projekt '{project_id}': Ingest von {total} Dokumenten "
@@ -1039,7 +1035,7 @@ async def ingest_paperless(
     if len(params) == 1:
         return "Fehler: mindestens einen Filter angeben (tag/document_type/correspondent/query_text)."
 
-    project_id = _validate_project(project_id)
+    project_id = validate_project(project_id)
     if regelwerk:
         _ensure_regelwerk(project_id)  # vor get_rag, sonst chunkt die Instanz normal
     is_regelwerk = regelwerk or _load_meta(project_id).get("regelwerk", False)
@@ -1088,7 +1084,7 @@ async def ingest_paperless(
 @mcp.tool()
 async def ingest_status(project_id: str) -> str:
     """Status des laufenden/letzten ingest_paperless-Laufs (läuft im Hintergrund)."""
-    project_id = _validate_project(project_id)
+    project_id = validate_project(project_id)
     st = _ingest_status.get(project_id)
     docs = _doc_status_counts(project_id)
     if not st and not docs:
@@ -1116,7 +1112,7 @@ async def ingest_control(project_id: str, action: str) -> str:
         project_id: technischer Projekt-Schlüssel.
         action: 'pause' | 'resume' | 'stop'.
     """
-    project_id = _validate_project(project_id)
+    project_id = validate_project(project_id)
     if action not in ("pause", "resume", "stop"):
         return "Fehler: action muss 'pause', 'resume' oder 'stop' sein."
     state = _ingest_status.get(project_id, {}).get("state")
@@ -1194,7 +1190,7 @@ async def ingest_directory(project_id: str, subpath: str = "", regelwerk: bool =
             f"einkommentieren (- /host/pfad:/data/inputs:ro) und Container neu starten."
         )
 
-    project_id = _validate_project(project_id)
+    project_id = validate_project(project_id)
     if regelwerk:
         _ensure_regelwerk(project_id)  # vor get_rag, sonst chunkt die Instanz normal
     is_regelwerk = regelwerk or _load_meta(project_id).get("regelwerk", False)
@@ -1265,7 +1261,7 @@ async def get_clause(project_id: str, clause: str, document: str = "") -> str:
         document: optionaler Substring-Filter auf den Dokumenttitel (wenn dieselbe
               §-Nummer in mehreren Bedingungswerken vorkommt).
     """
-    project_id = _validate_project(project_id)
+    project_id = validate_project(project_id)
     store = _load_clauses(project_id)
     if not store:
         return (
@@ -1388,7 +1384,7 @@ async def graph_view(project_id: str) -> str:
     Args:
         project_id: technischer Projekt-Schlüssel (siehe list_projects).
     """
-    project_id = _validate_project(project_id)
+    project_id = validate_project(project_id)
 
     # Prüfe, ob Graph existiert
     if not any((PROJECTS_DIR / project_id).glob("*.graphml")):
@@ -1402,7 +1398,7 @@ async def graph_view(project_id: str) -> str:
 def _delete_project_dir(project: str) -> bool:
     """Löscht Index-Verzeichnis + gecachte Instanz (nicht die Quelldokumente).
     True, wenn etwas gelöscht wurde. Validiert gegen Path-Traversal."""
-    _validate_project(project)
+    validate_project(project)
     _instances.pop(project, None)
     _ingest_status.pop(project, None)  # sonst bleibt eine Phantom-Karte bis zum Neustart
     _ingest_control.pop(project, None)  # altes stop/pause-Flag würde ein neues gleichnamiges Projekt treffen
@@ -1422,7 +1418,7 @@ async def rename_project(project_id: str, project_name: str) -> str:
         project_id: technischer Projekt-Schlüssel (siehe list_projects).
         project_name: neuer Anzeigename.
     """
-    project_id = _validate_project(project_id)
+    project_id = validate_project(project_id)
     if not (PROJECTS_DIR / project_id).exists():
         return f"Projekt '{project_id}' existiert nicht."
     meta = _load_meta(project_id)
@@ -1444,7 +1440,7 @@ async def delete_documents(project_id: str, doc_keys: list[str] | None = None,
         doc_keys: doc_status-Schlüssel, z.B. ["paperless:4193", "dup-ab12…"].
         only_failed: statt doc_keys ALLE Dokumente mit status=='failed' löschen.
     """
-    project_id = _validate_project(project_id)
+    project_id = validate_project(project_id)
     if not (PROJECTS_DIR / project_id).exists():
         return f"Projekt '{project_id}' existiert nicht."
     if only_failed:
@@ -1479,165 +1475,12 @@ async def delete_project(project_id: str, confirm: bool = False) -> str:
         project_id: technischer Projekt-Schlüssel (siehe list_projects).
         confirm: Löschbestätigung (muss True sein).
     """
-    _validate_project(project_id)
+    validate_project(project_id)
     if not confirm:
         return f"Sicherheitsabfrage: erneut mit confirm=True aufrufen, um '{project_id}' zu löschen."
     if _delete_project_dir(project_id):
         return f"Projekt '{project_id}' gelöscht."
     return f"Projekt '{project_id}' existiert nicht."
-
-
-# ----------------------------------------------------------------------------
-# Backup: tar.gz von PROJECTS_DIR nach BACKUP_DIR, Rotation + Scheduler.
-# Nach Vorbild ai-rem (gleiche Dateinamen-Konvention, .config.json als Status).
-# ponytail: unverschlüsselt — die Quelldokumente liegen im selben OneDrive
-# ebenfalls im Klartext, ein Key schützte hier nichts.
-# ----------------------------------------------------------------------------
-BACKUP_INTERVALS = {"hourly": 3600, "daily": 86400, "weekly": 604800}
-_BACKUP_CONFIG = BACKUP_DIR / ".config.json"
-# Obergrenze für hochgeladene Restore-Archive (Projektdaten inkl. Embeddings).
-MAX_RESTORE_UPLOAD = int(os.environ.get("MAX_RESTORE_UPLOAD", str(2 * 1024**3)))
-
-
-def _load_backup_cfg() -> dict:
-    try:
-        return json.loads(_BACKUP_CONFIG.read_text())
-    except (OSError, json.JSONDecodeError):
-        return {"enabled": True, "interval": "daily", "last_backup": None}
-
-
-def _save_backup_cfg(cfg: dict) -> None:
-    # ponytail: kein flock wie in ai-rem — hier schreiben nur Scheduler-Thread
-    # und Viewer-Thread desselben Prozesses, atomares replace reicht.
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = _BACKUP_CONFIG.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(cfg, indent=2))
-    tmp.replace(_BACKUP_CONFIG)
-
-
-def _project_signature(project: str) -> dict:
-    """Fingerabdruck EINES Projekts — ändert er sich nicht, ist ein neues Backup
-    dieses Projekts sinnlos."""
-    files = [p for p in (PROJECTS_DIR / project).rglob("*") if p.is_file()]
-    return {
-        "files": len(files),
-        "bytes": sum(p.stat().st_size for p in files),
-        "max_mtime": max((p.stat().st_mtime for p in files), default=0),
-    }
-
-
-def _existing_projects() -> list[str]:
-    """Alle Projekt-Verzeichnisse (Storage-Keys) unter PROJECTS_DIR."""
-    if not PROJECTS_DIR.exists():
-        return []
-    return sorted(p.name for p in PROJECTS_DIR.iterdir() if p.is_dir())
-
-
-def _project_backup_dir(project: str) -> Path:
-    return BACKUP_DIR / project
-
-
-def _list_project_backups(project: str) -> list[Path]:
-    """Archive EINES Projekts, neueste zuerst."""
-    return sorted(_project_backup_dir(project).glob("backup_*.tar.gz"), reverse=True)
-
-
-def _do_backup_project(project: str) -> str:
-    """Sichert EIN Projekt als tar.gz (Archiv-Wurzel = project_id, damit die Datei
-    für sich allein wiederherstellbar ist), rotiert alte Stände weg."""
-    project = _validate_project(project)
-    bdir = _project_backup_dir(project)
-    bdir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    name = f"backup_{ts}.tar.gz"
-    path = bdir / name
-
-    tmp = path.with_suffix(".tar.gz.tmp")
-    with tarfile.open(tmp, "w:gz") as tar:
-        tar.add(PROJECTS_DIR / project, arcname=project)
-    tmp.replace(path)
-
-    cfg = _load_backup_cfg()
-    cfg.setdefault("projects", {})[project] = {
-        "last_backup": _now(), "signature": _project_signature(project),
-    }
-    _save_backup_cfg(cfg)
-
-    for old in _list_project_backups(project)[MAX_BACKUPS:]:
-        old.unlink(missing_ok=True)
-
-    log.info("Backup Projekt '%s': %s (%.1f MB)", project, name, path.stat().st_size / 1024 / 1024)
-    return name
-
-
-def _do_restore_project(project: str, name: str) -> None:
-    """Restore eines gelisteten Projekt-Archivs (Name aus dem Projekt-Ordner)."""
-    project = _validate_project(project)
-    _restore_from_archive(_project_backup_dir(project) / name)
-
-
-def _restore_from_archive(path: Path) -> str:
-    """Spielt ein Projekt-Archiv zurück und legt das Projekt bei Bedarf NEU an.
-    Archiv-Wurzel = project_id (Legacy: 'projects/' mit allen Projekten darin).
-    Datenverlust-sicher — erst temp-extrahieren, dann der alte Stand je Projekt
-    weggemovt (nicht gelöscht), bis der neue drin ist. Gibt die Projekt-IDs zurück."""
-    tmp = PROJECTS_DIR.parent / ".restore_tmp"
-    shutil.rmtree(tmp, ignore_errors=True)
-    tmp.mkdir(parents=True)
-    try:
-        with tarfile.open(path, "r:gz") as tar:
-            tar.extractall(tmp, filter="data")  # Python 3.12 -> traversal-sicher
-        tops = [p for p in tmp.iterdir() if p.is_dir()]
-        # Legacy-Gesamtarchiv: Wurzel 'projects/' -> die enthaltenen Projekte.
-        if len(tops) == 1 and tops[0].name == "projects":
-            tops = [p for p in tops[0].iterdir() if p.is_dir()]
-        if not tops:
-            raise ValueError("Archiv enthält kein Projekt-Verzeichnis")
-        restored = []
-        for src in tops:
-            project = _validate_project(src.name)  # Path-Traversal-Schutz
-            dst = PROJECTS_DIR / project
-            old = PROJECTS_DIR.parent / f".{project}_old"
-            PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
-            shutil.rmtree(old, ignore_errors=True)
-            if dst.exists():
-                dst.rename(old)  # alten Stand erst wegmoven, nicht löschen
-            src.rename(dst)
-            shutil.rmtree(old, ignore_errors=True)
-            _instances.pop(project, None)  # gecachte Instanz zeigt auf alten Stand
-            restored.append(project)
-        log.info("Restore aus %s: %s", path.name, ", ".join(restored))
-        return ", ".join(restored)
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
-
-
-def _backup_scheduler() -> None:
-    """Prüft minütlich, ob je Projekt ein geplantes Backup fällig ist."""
-    while True:
-        time.sleep(60)
-        try:
-            cfg = _load_backup_cfg()
-            if not cfg.get("enabled"):
-                continue
-            # Läuft ein Ingest, schreibt LightRAG gerade in die Stores — dann
-            # gäbe das tar einen halben Stand. Nächster Tick versucht es erneut.
-            if _active_ingests > 0:
-                continue
-            interval = BACKUP_INTERVALS.get(cfg.get("interval", "daily"), 86400)
-            projs = cfg.get("projects", {})
-            for project in _existing_projects():
-                pm = projs.get(project, {})
-                last = pm.get("last_backup")
-                if last:
-                    delta = (datetime.now() - datetime.fromisoformat(last)).total_seconds()
-                    if delta < interval:
-                        continue
-                if pm.get("signature") == _project_signature(project):
-                    continue  # nichts geändert seit dem letzten Backup
-                _do_backup_project(project)
-        except Exception:  # noqa: BLE001 — Scheduler darf nie sterben
-            log.exception("Geplantes Backup fehlgeschlagen")
 
 
 class _ViewerHandler(SimpleHTTPRequestHandler):
@@ -1669,7 +1512,7 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
                     meta[proj_id] = _load_meta(proj_id)
             # Backup-Archive je Projekt (neueste zuerst) für die Restore-Auswahl.
             project_backups = {
-                p: [{"name": f.name, "size": f.stat().st_size} for f in _list_project_backups(p)]
+                p: [{"name": f.name, "size": f.stat().st_size} for f in backup.list_project_backups(p)]
                 for p in rendered
             }
             # Anzahl indexierter Dokumente je Projekt aus dem Ingest-Manifest.
@@ -1687,7 +1530,7 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
                 if s.get("state") in ("running", "paused"):
                     sc["docs"] = _doc_status_counts(name)
                 status_view[name] = sc
-            body = index_html(items, status_view, meta, _load_backup_cfg(),
+            body = index_html(items, status_view, meta, backup.load_cfg(),
                               project_backups, notice, counts, flagged,
                               graph_counts).encode("utf-8")
             self.send_response(200)
@@ -1707,7 +1550,7 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
     def _serve_nodes(self, project_id: str, query: str):
         """Antwortet mit dem gedeckelten Knoten/Kanten-JSON für den Viewer."""
         try:
-            _validate_project(project_id)
+            validate_project(project_id)
         except ValueError:
             self.send_error(400, "invalid project_id")
             return
@@ -1745,7 +1588,7 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             params = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8"))
             project_id = (params.get("project_id") or [""])[0]
             try:
-                _validate_project(project_id)
+                validate_project(project_id)
                 _render_project_graphs(project_id)
             except ValueError:
                 self.send_error(400, "invalid project_id")
@@ -1761,7 +1604,7 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             project_id = (params.get("project_id") or [""])[0]
             project_name = (params.get("project_name") or [""])[0]
             try:
-                _validate_project(project_id)
+                validate_project(project_id)
                 meta = _load_meta(project_id)
                 meta["project_name"] = project_name
                 _save_meta(project_id, meta)
@@ -1780,19 +1623,19 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             params = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8"))
             project_id = (params.get("project_id") or [""])[0]
             try:
-                _validate_project(project_id)
+                validate_project(project_id)
             except ValueError:
                 self.send_error(400, "invalid project_id")
                 return
             # Nur sichern, wenn sich das Projekt seit dem letzten Backup geändert hat.
-            pm = _load_backup_cfg().get("projects", {}).get(project_id, {})
-            if pm.get("signature") == _project_signature(project_id):
+            pm = backup.load_cfg().get("projects", {}).get(project_id, {})
+            if pm.get("signature") == backup.project_signature(project_id):
                 self.send_response(303)
                 self.send_header("Location", "/?backup=nochange")
                 self.end_headers()
                 return
             try:
-                _do_backup_project(project_id)
+                backup.backup_project(project_id)
             except Exception:  # noqa: BLE001 — Fehler gehört in die UI, nicht in einen 500er-Trace
                 log.exception("Manuelles Backup fehlgeschlagen")
                 self.send_error(500, "Backup fehlgeschlagen — siehe Server-Log")
@@ -1808,14 +1651,14 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
                 self.send_error(409, "Ingest laeuft — Restore waere inkonsistent")
                 return
             length = int(self.headers.get("Content-Length", 0))
-            if length <= 0 or length > MAX_RESTORE_UPLOAD:
+            if length <= 0 or length > backup.MAX_RESTORE_UPLOAD:
                 self.send_error(400, "leerer oder zu großer Upload")
                 return
             BACKUP_DIR.mkdir(parents=True, exist_ok=True)
             tmp = BACKUP_DIR / ".upload_restore.tar.gz"
             try:
                 tmp.write_bytes(self.rfile.read(length))
-                _restore_from_archive(tmp)  # liest project_id aus dem Archiv, legt bei Bedarf neu an
+                backup.restore_from_archive(tmp)  # liest project_id aus dem Archiv, legt bei Bedarf neu an
             except Exception:  # noqa: BLE001 — meist ungültige Datei; in die UI, nicht 500
                 log.exception("Restore aus Upload fehlgeschlagen")
                 tmp.unlink(missing_ok=True)
@@ -1830,14 +1673,14 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", 0))
             params = urllib.parse.parse_qs(self.rfile.read(length).decode("utf-8"))
             interval = (params.get("interval") or [""])[0]
-            if interval not in BACKUP_INTERVALS and interval != "off":
+            if interval not in backup.BACKUP_INTERVALS and interval != "off":
                 self.send_error(400, "invalid interval")
                 return
-            cfg = _load_backup_cfg()
+            cfg = backup.load_cfg()
             cfg["enabled"] = interval != "off"
             if interval != "off":
                 cfg["interval"] = interval
-            _save_backup_cfg(cfg)
+            backup.save_cfg(cfg)
             self.send_response(303)
             self.send_header("Location", "/")
             self.end_headers()
@@ -1851,15 +1694,15 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             project_id = (params.get("project_id") or [""])[0]
             name = (params.get("name") or [""])[0]
             try:
-                _validate_project(project_id)
+                validate_project(project_id)
             except ValueError:
                 self.send_error(400, "invalid project_id")
                 return
-            if name not in {f.name for f in _list_project_backups(project_id)}:  # kein Path-Traversal
+            if name not in {f.name for f in backup.list_project_backups(project_id)}:  # kein Path-Traversal
                 self.send_error(400, "unbekanntes Backup")
                 return
             try:
-                _do_restore_project(project_id, name)
+                backup.restore_project(project_id, name)
             except Exception:  # noqa: BLE001 — Fehler gehört in die UI, nicht in einen Trace
                 log.exception("Restore fehlgeschlagen")
                 self.send_error(500, "Restore fehlgeschlagen — siehe Server-Log")
@@ -1874,7 +1717,7 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             project_id = (params.get("project_id") or [""])[0]
             action = (params.get("action") or [""])[0]
             try:
-                _validate_project(project_id)
+                validate_project(project_id)
             except ValueError:
                 self.send_error(400, "invalid project_id")
                 return
@@ -1915,7 +1758,7 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             doc_key = (params.get("doc_key") or [""])[0]
             decision = (params.get("decision") or [""])[0]
             try:
-                _validate_project(project_id)
+                validate_project(project_id)
             except ValueError:
                 self.send_error(400, "invalid project_id")
                 return
@@ -1966,7 +1809,7 @@ if __name__ == "__main__":
         MCP_PORT, LLM_MODEL, LLM_BASE_URL, EMBED_MODEL, EMBED_DIM, EMBED_BASE_URL,
     )
     _start_viewer_server()
-    threading.Thread(target=_backup_scheduler, daemon=True, name="backup-scheduler").start()
+    threading.Thread(target=backup.scheduler, daemon=True, name="backup-scheduler").start()
     log.info("Backup-Scheduler läuft (Ziel=%s, max=%s)", BACKUP_DIR, MAX_BACKUPS)
 
     mcp.run(transport="streamable-http")
