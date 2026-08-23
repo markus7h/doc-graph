@@ -28,7 +28,39 @@ doc-graph
 | `backup.py` | Backup/Restore je Projekt samt Scheduler. Kennt `server.py` nicht; die beiden Rückfragen an den laufenden Dienst (läuft ein Ingest? Instanz-Cache verwerfen) hängt `server.py` beim Start ein. |
 | `graphview.py` | HTML-Rendering des Graph-Viewers. |
 | `clauses.py` | Klausel-Splitting für Regelwerke. |
+| `backfill_fundstellen.py` | Einmal-Migration: trägt Fundstellen in Projekte nach, die vor dem `file_paths`-Fix ingestiert wurden. |
 | `server.py` | Rest: MCP-Tools, Ingest-Pipeline, LightRAG-Setup, Embedding-Client, HTTP-Viewer. Weiterhin zu groß — siehe Verbesserungsplan. |
+
+### Fundstellen
+
+`query` liefert am Ende eine **Reference Document List**, mit der sich jede
+Aussage auf ein Dokument zurückführen lässt. LightRAG baut sie aus dem
+`file_path` der Chunks und überspringt dabei seinen eigenen Default
+`unknown_source` (`utils.py`, `generate_reference_list_from_chunks`). Wird beim
+`ainsert` kein `file_paths` übergeben, bleibt die Liste deshalb **leer** und
+jede `reference_id` ist `""` — die Antwort ist dann nicht belegbar.
+
+doc-graph übergibt als Fundstelle `Titel, Datum, Korrespondent`, gelesen aus dem
+Metadaten-Header, den `_doc_to_text` (Paperless) und `_file_to_text` (Datei)
+ohnehin an den Textanfang setzen. Fehlt der Header, steht dort `ohne Titel` —
+bewusst, statt einen plausiblen Beleg zu erfinden.
+
+Projekte, die vor diesem Fix ingestiert wurden, tragen überall
+`unknown_source`. Das repariert `backfill_fundstellen.py` **ohne Neu-Ingest**,
+weil die Herkunft schon in jedem Volltext steht: ein reines Metadaten-Update
+über `kv_store_full_docs`, `kv_store_text_chunks`, `kv_store_doc_status` und
+`vdb_chunks`, ohne Embeddings und ohne LLM-Calls, Sekunden statt Stunden.
+
+```bash
+docker exec doc-graph python /app/backfill_fundstellen.py --dry-run   # Bericht
+docker exec doc-graph python /app/backfill_fundstellen.py             # schreibend
+```
+
+Idempotent, legt vor jedem Schreiben ein `.bak-<Zeitstempel>` an und fasst
+bereits gesetzte Werte nicht an. **Grenze:** Entities und Relationen tragen ihre
+Provenienz ebenfalls als `file_path`, aber zur Extraktionszeit im Graph
+eingefroren — die bleiben `unknown_source`, bis sie neu extrahiert werden. Für
+die Referenzliste ist das unerheblich, die kommt ausschließlich aus den Chunks.
 
 Bewusste Entscheidung: **LightRAG als Library, nicht als LightRAG-Server.**
 Der offizielle LightRAG-Server bindet einen Workspace fest pro Prozess —

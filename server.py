@@ -706,6 +706,33 @@ def _doc_to_text(doc: dict, correspondent_name: str | None,
     return "\n".join(header) + "\n\n" + (doc.get("content") or "")
 
 
+def _fundstelle(text: str) -> str:
+    """Zitierfaehige Quellenangabe fuer LightRAGs Reference Document List.
+
+    LightRAG baut die Liste aus dem file_path der Chunks und ueberspringt dabei
+    seinen eigenen Default 'unknown_source' (utils.py, generate_reference_list_
+    from_chunks). Ohne file_paths am ainsert bleibt die Liste deshalb LEER und
+    jede reference_id ist "" — eine Antwort ist dann nicht belegbar, und die
+    Herkunft ueberlebt nur dort, wo sie zufaellig im Text steht: im
+    Metadaten-Header, den _doc_to_text bzw. _file_to_text an den Anfang setzen.
+    Also genau den zurueckgelesen, statt die Metadaten ein zweites Mal durch die
+    Aufrufkette (_run_ingest kennt nur key/text/hash) zu schleifen.
+
+    ponytail: Zeichenkette statt Dict — LightRAG will hier einen Pfad-String,
+    und was der Nutzer zitieren soll, steht damit an genau einer Stelle.
+    """
+    kopf: dict[str, str] = {}
+    for zeile in text.split("\n\n", 1)[0].splitlines():
+        schluessel, _, wert = zeile.partition(": ")
+        if wert:
+            kopf[schluessel.strip()] = wert.strip()
+    teile = [kopf.get("Dokument") or "ohne Titel"]
+    for feld in ("Datum", "Korrespondent"):
+        if kopf.get(feld):
+            teile.append(kopf[feld])
+    return ", ".join(teile)
+
+
 # ----------------------------------------------------------------------------
 # MCP-Server + Tools
 # ----------------------------------------------------------------------------
@@ -920,7 +947,12 @@ async def _run_ingest(project_id: str, rag, pending: list, counts: dict, manifes
             interrupted = None
             t_batch = time.perf_counter()
             async with _insert_lock:
-                ins = asyncio.create_task(rag.ainsert(texts, ids=keys))
+                # file_paths ist NICHT optional-kosmetisch: ohne den Parameter
+                # setzt LightRAG 'unknown_source' und filtert die Chunks damit aus
+                # der Reference Document List — die Antwort waere unbelegbar.
+                ins = asyncio.create_task(
+                    rag.ainsert(texts, ids=keys,
+                                file_paths=[_fundstelle(t) for t in texts]))
                 while True:
                     finished, _ = await asyncio.wait({ins}, timeout=0.3)
                     if ins in finished:
