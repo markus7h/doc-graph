@@ -20,6 +20,16 @@ doc-graph
 └─ Projekt "silbersee" → /data/projects/silbersee/
 ```
 
+**Code-Aufteilung** (Stand 2026-08-23, laufende Entflechtung von `server.py`):
+
+| Modul | Inhalt |
+|---|---|
+| `config.py` | Pfade, Logger, Projektnamen-Validierung. Bewusst ohne schwere Importe, damit Module und ihre Tests ohne LightRAG/MCP laufen. |
+| `backup.py` | Backup/Restore je Projekt samt Scheduler. Kennt `server.py` nicht; die beiden Rückfragen an den laufenden Dienst (läuft ein Ingest? Instanz-Cache verwerfen) hängt `server.py` beim Start ein. |
+| `graphview.py` | HTML-Rendering des Graph-Viewers. |
+| `clauses.py` | Klausel-Splitting für Regelwerke. |
+| `server.py` | Rest: MCP-Tools, Ingest-Pipeline, LightRAG-Setup, Embedding-Client, HTTP-Viewer. Weiterhin zu groß — siehe Verbesserungsplan. |
+
 Bewusste Entscheidung: **LightRAG als Library, nicht als LightRAG-Server.**
 Der offizielle LightRAG-Server bindet einen Workspace fest pro Prozess —
 Multi-Projekt hieße dort ein Container pro Projekt. Hier verwaltet der
