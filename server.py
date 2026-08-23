@@ -189,8 +189,30 @@ def _cap_embed_input(text: str) -> str:
     return text[:limit]
 
 
+# httpx meldet eine vom Server geschlossene Keep-Alive-Verbindung als
+# RemoteProtocolError("Server disconnected without sending a response"). Der
+# globale _embed_client haelt den Pool ueber Stunden offen; je mehr Requests ein
+# Dokument ausloest, desto wahrscheinlicher greift es eine tote Verbindung ab.
+# Ein Wiederholversuch baut eine frische auf — die tote hat der Pool nach dem
+# Fehler bereits verworfen. AsyncHTTPTransport(retries=) hilft hier NICHT, das
+# deckt nur den Verbindungsaufbau ab, nicht den Abbruch nach dem Senden.
+_EMBED_CONN_ERRORS = (httpx.RemoteProtocolError, httpx.ConnectError, httpx.ReadError)
+
+
 async def _embed_post(payload):
     """Ein Embedding-Request. Erwartet bereits gekappte und portionierte Inputs."""
+    for versuch in range(3):
+        try:
+            return await _embed_post_einmal(payload)
+        except _EMBED_CONN_ERRORS as e:
+            if versuch == 2:
+                raise
+            log.warning("Embedding-Verbindung abgerissen (%s), Versuch %d/3: %s",
+                        type(e).__name__, versuch + 2, e)
+            await asyncio.sleep(0.5 * (versuch + 1))
+
+
+async def _embed_post_einmal(payload):
     r = await _embed_client.post(
         f"{EMBED_BASE_URL}/embeddings",
         json={"model": EMBED_MODEL, "input": payload},
@@ -300,7 +322,15 @@ async def _swap_begin() -> None:
         _active_ingests += 1
         if _active_ingests == 1:
             log.info("Ingest-Hook: myai wecken…")
-            await asyncio.to_thread(_run_hook, "ingest-begin.sh")
+            try:
+                await asyncio.to_thread(_run_hook, "ingest-begin.sh")
+            except BaseException:
+                # Ohne das bleibt der Zaehler oben: der Aufrufer setzt swapped
+                # erst NACH diesem await, sein finally ruft also kein _swap_end.
+                # Folge waere ein stiller Dauerausfall des Backup-Schedulers, der
+                # _active_ingests > 0 als "Ingest laeuft" liest.
+                _active_ingests -= 1
+                raise
 
 async def _swap_end() -> None:
     """Nach dem letzten laufenden Ingest (No-op-Hook, siehe ingest-end.sh)."""

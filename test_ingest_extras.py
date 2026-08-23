@@ -259,6 +259,47 @@ def test_ingest_directory_scans_off_the_event_loop():
         assert ticks > 0, "Scan lief im Event-Loop statt in einem Thread"
 
 
+# --------------------------------------------- Swap-Refcount bei Hook-Fehler
+def test_swap_begin_leckt_refcount_nicht_bei_hookfehler():
+    """Der Backup-Scheduler liest _active_ingests > 0 als "Ingest laeuft". Bleibt
+    der Zaehler nach einem gescheiterten Wake-Hook oben, laeuft nie wieder ein
+    Backup — ohne dass irgendetwas fehlschlaegt. Stiller Dauerausfall."""
+    server.SWAP_ENABLED = True
+    server._active_ingests = 0
+
+    def _boom(script):
+        raise RuntimeError("ingest-begin.sh rc=1")
+
+    original = server._run_hook
+    server._run_hook = _boom
+    try:
+        try:
+            asyncio.run(server._swap_begin())
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("Hook-Fehler haette durchschlagen muessen")
+        assert server._active_ingests == 0, (
+            f"Refcount leckt: {server._active_ingests} statt 0")
+    finally:
+        server._run_hook = original
+
+
+def test_swap_begin_zaehlt_bei_erfolg_hoch():
+    """Gegenprobe — der Fix darf den Normalfall nicht kaputtmachen."""
+    server.SWAP_ENABLED = True
+    server._active_ingests = 0
+    original = server._run_hook
+    server._run_hook = lambda script: None
+    try:
+        asyncio.run(server._swap_begin())
+        assert server._active_ingests == 1, server._active_ingests
+        asyncio.run(server._swap_end())
+        assert server._active_ingests == 0, server._active_ingests
+    finally:
+        server._run_hook = original
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
