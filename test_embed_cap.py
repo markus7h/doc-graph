@@ -72,7 +72,10 @@ class _Client:
 
     async def post(self, url, json=None, headers=None):
         self.sent.append(json["input"])
-        return self._responses.pop(0)
+        r = self._responses.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return r
 
 
 def _ok(n):
@@ -198,6 +201,49 @@ def test_retry_wirkt_innerhalb_eines_haeppchens():
     assert len(client.sent) == 3, f"{len(client.sent)} Requests statt 3"
     assert client.sent[2][0] == "abcd", client.sent[2]
     assert out.shape == (n, server.EMBED_DIM), out.shape
+
+
+# ------------------------------------- 3c: Retry bei abgerissener Verbindung
+def _disconnect():
+    import httpx
+    return httpx.RemoteProtocolError("Server disconnected without sending a response.")
+
+
+def test_embed_func_wiederholt_bei_verbindungsabbruch():
+    """Der haeufigste Fehler im Betrieb: der Server schliesst eine Keep-Alive-
+    Verbindung, httpx meldet RemoteProtocolError. Ohne Wiederholung reisst das
+    den Ingest des ganzen Dokuments ab."""
+    client = _Client([_disconnect(), _ok(1)])
+    server._embed_client = client
+    out = asyncio.run(server._embed_func(["abc"]))
+
+    assert len(client.sent) == 2, "kein Wiederholversuch"
+    assert out.shape == (1, server.EMBED_DIM), out.shape
+
+
+def test_embed_func_gibt_nach_drei_versuchen_auf():
+    """Kein endloses Wiederholen — ein dauerhaft toter Endpunkt muss durchschlagen."""
+    import httpx
+    client = _Client([_disconnect(), _disconnect(), _disconnect()])
+    server._embed_client = client
+    try:
+        asyncio.run(server._embed_func(["abc"]))
+    except httpx.RemoteProtocolError:
+        pass
+    else:
+        raise AssertionError("Fehler haette nach 3 Versuchen durchschlagen muessen")
+    assert len(client.sent) == 3, f"{len(client.sent)} Versuche statt 3"
+
+
+def test_embed_func_wiederholt_nicht_bei_serverfehler():
+    """HTTP 500 ist kein Verbindungsproblem — hier greift nur der too-large-Pfad."""
+    client = _Client([_Resp(500, text="CUDA out of memory")])
+    server._embed_client = client
+    try:
+        asyncio.run(server._embed_func(["abc"]))
+    except AssertionError:
+        pass  # raise_for_status der Attrappe
+    assert len(client.sent) == 1, "Verbindungs-Retry haette nicht greifen duerfen"
 
 
 # ------------------------------------------- 4: Konsistenz mit LightRAG-Setup
