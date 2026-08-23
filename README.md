@@ -365,6 +365,16 @@ von „was behauptet die Gegenseite" (query auf dem Fall-Projekt).
   Dokument. Der Cap greift für alles, was eingebettet wird: Chunks *und* die
   von LightRAG erzeugten Entity-/Relation-Beschreibungen, die
   `CHUNK_TOKEN_SIZE` prinzipiell nicht deckeln kann.
+- **`EMBED_BATCH`** (default 64): Obergrenze für die *Anzahl* Inputs pro
+  Embedding-Request — `EMBED_MAX_TOKENS` deckelt nur deren Länge. LightRAG
+  übergibt beim Merge alle Entity-/Relation-Beschreibungen auf einmal; in einem
+  gefüllten Index sind das schnell vierstellig viele. Gemessen: 1024 Inputs à
+  6144 Zeichen = 100 s für einen einzigen Request, mal `EMBED_MAX_ASYNC`
+  parallel deutlich über `EMBED_TIMEOUT`. Der Server bricht dann die Verbindung
+  ab (*Server disconnected without sending a response*) und LightRAG hält die
+  **gesamte** Pipeline an — alle noch offenen Dokumente bleiben liegen.
+  Häppchenweises Senden hält jeden Request im Sekundenbereich. Nur erhöhen,
+  wenn der Embedder auf einer GPU läuft.
 - **`CHUNK_TOKEN_SIZE`** (default 1200 = LightRAG-Default): größere Chunks =
   halb so viele Extraktions-Calls (der ~3–4k-Token-Prompt-Overhead fällt pro
   Chunk an). Der frühere 600er-Default war ein Workaround gegen 480s-Worker-
