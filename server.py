@@ -1265,7 +1265,8 @@ async def ingest_directory(project_id: str, subpath: str = "", regelwerk: bool =
 @mcp.tool()
 async def get_entity(project_id: str, entity_name: str) -> str:
     """Liefert Details und Beziehungen zu einer Entität im Graph
-    (z. B. Person, Grundstück, Aktenzeichen).
+    (z. B. Person, Grundstück, Aktenzeichen) als Kontext-Dump — die Antwort
+    formuliert Claude daraus selbst, wie bei query(only_context=True).
 
     Args:
         project_id: technischer Projekt-Schlüssel (siehe list_projects).
@@ -1275,7 +1276,9 @@ async def get_entity(project_id: str, entity_name: str) -> str:
     result = await rag.aquery(
         f"Nenne alle bekannten Fakten und Beziehungen zur Entität '{entity_name}', "
         f"chronologisch geordnet, mit Quellenbezug.",
-        param=QueryParam(mode="local"),
+        # only_need_context: sonst formuliert das lokale LLM die Antwort und
+        # laeuft auf der geteilten GPU in den MCP-Timeout (wie bei query).
+        param=QueryParam(mode="local", only_need_context=True),
     )
     return str(result)
 
