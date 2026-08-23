@@ -1263,7 +1263,8 @@ async def ingest_directory(project_id: str, subpath: str = "", regelwerk: bool =
 
 
 @mcp.tool()
-async def get_entity(project_id: str, entity_name: str) -> str:
+async def get_entity(project_id: str, entity_name: str,
+                     max_total_tokens: int = 12000) -> str:
     """Liefert Details und Beziehungen zu einer Entität im Graph
     (z. B. Person, Grundstück, Aktenzeichen) als Kontext-Dump — die Antwort
     formuliert Claude daraus selbst, wie bei query(only_context=True).
@@ -1271,6 +1272,8 @@ async def get_entity(project_id: str, entity_name: str) -> str:
     Args:
         project_id: technischer Projekt-Schlüssel (siehe list_projects).
         entity_name: Name der Entität.
+        max_total_tokens: Kontext-Budget (Default 12000), deckelt den Dump
+              gegen das MCP-Token-Limit. Höher setzen fuer breitere Fragen.
     """
     rag = await get_rag(project_id)
     result = await rag.aquery(
@@ -1278,7 +1281,10 @@ async def get_entity(project_id: str, entity_name: str) -> str:
         f"chronologisch geordnet, mit Quellenbezug.",
         # only_need_context: sonst formuliert das lokale LLM die Antwort und
         # laeuft auf der geteilten GPU in den MCP-Timeout (wie bei query).
-        param=QueryParam(mode="local", only_need_context=True),
+        # max_total_tokens: ohne Deckel kam der Dump mit ~100k Zeichen zurueck
+        # und sprengte das MCP-Token-Limit (Issue #2, wie bei query).
+        param=QueryParam(mode="local", only_need_context=True,
+                         max_total_tokens=max_total_tokens),
     )
     return str(result)
 
