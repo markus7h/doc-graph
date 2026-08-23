@@ -198,23 +198,23 @@ def _progress_row(st: dict, controls: str = "") -> str:
             f'style="width:{pct}%"></div></div>{_status_badge(st)}{ctl}</div>')
 
 
-# doc-graph-Icon (Variante 2): grünes Dokument mit Textzeilen + herausragendem
+# doc-graph-Icon (Variante 2): blaues Dokument mit Textzeilen + herausragendem
 # Graph-Netzwerk. Inline-SVG, damit ohne externe Assets/CDN.
 _LOGO = (
     '<svg class="logo" viewBox="0 0 56 48" width="42" height="36" aria-hidden="true">'
     '<defs><linearGradient id="dg" x1="0" y1="0" x2="1" y2="1">'
-    '<stop offset="0" stop-color="#43a047"/><stop offset="1" stop-color="#2e7d32"/>'
+    '<stop offset="0" stop-color="#4a6fb5"/><stop offset="1" stop-color="#2c4577"/>'
     '</linearGradient></defs>'
     '<path d="M4 8a4 4 0 0 1 4-4h18l8 8v22a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4z" fill="url(#dg)"/>'
     '<path d="M26 4l8 8h-8z" fill="#fff" opacity=".35"/>'
     '<g stroke="#fff" stroke-width="2.4" stroke-linecap="round" opacity=".9">'
     '<line x1="9" y1="15" x2="21" y2="15"/><line x1="9" y1="21" x2="19" y2="21"/>'
     '<line x1="9" y1="27" x2="17" y2="27"/></g>'
-    '<g stroke="#8bc34a" stroke-width="2.6" stroke-linecap="round">'
+    '<g stroke="#9db8e0" stroke-width="2.6" stroke-linecap="round">'
     '<line x1="31" y1="29" x2="43" y2="18"/><line x1="31" y1="29" x2="49" y2="32"/></g>'
     '<circle cx="31" cy="29" r="4.5" fill="#fff"/>'
-    '<circle cx="43" cy="18" r="4" fill="#1b5e20"/>'
-    '<circle cx="49" cy="32" r="4.5" fill="#8bc34a"/></svg>'
+    '<circle cx="43" cy="18" r="4" fill="#1e3050"/>'
+    '<circle cx="49" cy="32" r="4.5" fill="#9db8e0"/></svg>'
 )
 
 # Browser-Favicon: dasselbe Motiv quadratisch (0 0 48), transparenter Hintergrund,
@@ -224,17 +224,17 @@ _FAVICON = (
     "data:image/svg+xml,"
     "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'>"
     "<defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'>"
-    "<stop offset='0' stop-color='#43a047'/><stop offset='1' stop-color='#2e7d32'/>"
+    "<stop offset='0' stop-color='#4a6fb5'/><stop offset='1' stop-color='#2c4577'/>"
     "</linearGradient></defs>"
     "<path d='M6 8a4 4 0 0 1 4-4h16l8 8v24a4 4 0 0 1-4 4H10a4 4 0 0 1-4-4z' fill='url(#g)'/>"
     "<path d='M26 4l8 8h-8z' fill='#fff' opacity='.35'/>"
     "<g stroke='#fff' stroke-width='2.4' stroke-linecap='round' opacity='.9'>"
     "<line x1='11' y1='15' x2='22' y2='15'/><line x1='11' y1='21' x2='20' y2='21'/></g>"
-    "<g stroke='#8bc34a' stroke-width='2.6' stroke-linecap='round'>"
+    "<g stroke='#9db8e0' stroke-width='2.6' stroke-linecap='round'>"
     "<line x1='20' y1='31' x2='30' y2='24'/><line x1='20' y1='31' x2='31' y2='34'/></g>"
     "<circle cx='20' cy='31' r='4' fill='#fff'/>"
-    "<circle cx='30' cy='24' r='3.5' fill='#1b5e20'/>"
-    "<circle cx='31' cy='34' r='4' fill='#8bc34a'/></svg>"
+    "<circle cx='30' cy='24' r='3.5' fill='#1e3050'/>"
+    "<circle cx='31' cy='34' r='4' fill='#9db8e0'/></svg>"
 ).replace("#", "%23")
 
 _FAVICON_LINK = f'<link rel="icon" type="image/svg+xml" href="{_FAVICON}">'
@@ -452,7 +452,7 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-  :root{{--bg:#fafafa;--card:#fff;--border:#ececec;--accent:#388e3c;--ah:#2e7d32;--text:#333;--muted:#666}}
+  :root{{--bg:#fafafa;--card:#fff;--border:#ececec;--accent:#3a5a9b;--ah:#2c4577;--text:#333;--muted:#666}}
   *{{box-sizing:border-box;margin:0;padding:0}}
   body{{background:var(--bg);color:var(--text);font-family:"Source Sans 3","Source Sans Pro",Arial,sans-serif;letter-spacing:.15pt;font-size:14px;padding:32px;max-width:760px;margin:0 auto}}
   h1{{font-size:22px;font-weight:700;margin-bottom:4px}}
@@ -484,7 +484,7 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
     box-shadow:0 2px 8px rgba(0,0,0,.18);opacity:0;pointer-events:none;transition:opacity .12s ease;z-index:30}}
   .ib:hover::after{{opacity:1;transition-delay:1.8s}}
   /* Icon-Buttons hovern grün (Aktion), nur Löschen bleibt rot (destruktiv). */
-  .del button.ib:hover{{border-color:var(--accent);color:var(--accent);background:#edf7ee}}
+  .del button.ib:hover{{border-color:var(--accent);color:var(--accent);background:#e8edf7}}
   .del.danger button.ib:hover{{border-color:#dd3333;color:#dd3333;background:#fff5f5}}
   .prog .fill{{height:100%;background:var(--accent);border-radius:20px;transition:width .4s ease}}
   .prog .fill.paused{{background:#ffb300}}
@@ -496,7 +496,7 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
   .hint,.empty{{color:var(--muted);font-size:12px}}
   .badge{{font-size:12px;font-weight:600;padding:2px 9px;border-radius:20px;white-space:nowrap}}
   .badge.run{{background:#fff8e1;color:#8a6d00;border:1px solid #ffe082}}
-  .badge.done{{background:#edf7ee;color:var(--ah);border:1px solid #c8e6c9}}
+  .badge.done{{background:#e8edf7;color:var(--ah);border:1px solid #c8e6c9}}
   .badge.err{{background:#fff5f5;color:#c62828;border:1px solid #ffcdd2}}
   .del, .del button{{background:none;border:1px solid var(--border);color:var(--muted);
     border-radius:6px;padding:5px 11px;font-size:12px;cursor:pointer;white-space:nowrap;transition:all .15s;margin:0;display:inline-block}}
@@ -520,7 +520,7 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
     border-radius:6px;padding:5px 11px;font-size:12px;cursor:pointer;white-space:nowrap;
     transition:all .15s;margin:0;display:inline-block}}
   .dec:hover, .dec button:hover{{border-color:#888;color:var(--text);background:var(--bg)}}
-  .dec.ok:hover, .dec.ok button:hover{{border-color:var(--accent);color:var(--accent);background:#edf7ee}}
+  .dec.ok:hover, .dec.ok button:hover{{border-color:var(--accent);color:var(--accent);background:#e8edf7}}
 </style></head><body>
 <div class="brand">{_LOGO}<h1>doc-graph</h1></div>
 <p class="sub">Knowledge Graphs aus deinen Dokumenten — pro Projekt ein Graph. Klick ein Projekt an, um den interaktiven Graphen zu öffnen.</p>
@@ -574,7 +574,7 @@ def graph_html(title: str, projects: list[str] | None = None,
 <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="{_VIS_CDN}"></script>
 <style>
-  :root{{--bg:#fafafa;--card:#fff;--border:#ececec;--accent:#388e3c;--ah:#2e7d32;--text:#333;--muted:#666}}
+  :root{{--bg:#fafafa;--card:#fff;--border:#ececec;--accent:#3a5a9b;--ah:#2c4577;--text:#333;--muted:#666}}
   *{{box-sizing:border-box;margin:0;padding:0}}
   body{{background:var(--bg);color:var(--text);font-family:"Source Sans 3","Source Sans Pro",Arial,sans-serif;letter-spacing:.15pt;font-size:14px;padding:20px}}
   h1{{font-size:22px;font-weight:700;margin-bottom:4px}}

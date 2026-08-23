@@ -119,7 +119,9 @@ danach von allen Clients gleichermaßen nutzbar.
 
 `graph_view(project_id)` rendert den Graphen als interaktive HTML-Ansicht
 (vis-network, Optik an den ai-rem-Graphen angelehnt: heller Hintergrund,
-grüner Akzent): Knoten = Entitäten (gefärbt nach Typ), Kanten = Beziehungen.
+Akzent in gedecktem Indigo `#3a5a9b`): Knoten = Entitäten (gefärbt nach Typ),
+Kanten = Beziehungen. Die Typ-Palette der Knoten ist davon unabhängig — sie
+kodiert Entitätstypen und ändert sich nicht mit der Oberflächenfarbe.
 Details (Beschreibung) erscheinen per Klick auf Knoten/Kante in einem
 mehrzeiligen Panel.
 
@@ -168,14 +170,14 @@ gerendertem Graph, **Anzahl Entitäten und Kanten** (aus dem `.graphml`). Der
 **Import-Status-Badge** (⏳ läuft `done/total` / ⏸ pausiert / ⏹ abgebrochen /
 ✓ zuletzt indexiert / ✗ Fehler). Bei laufendem/pausiertem Import rutscht das Badge
 in eine eigene, vollbreite Fortschrittszeile unter den Buttons — mit **Fortschrittsbalken**
-(`done/total`, grün; gelb bei Pause) statt gequetscht neben den Aktionen.
+(`done/total`, im Akzent; gelb bei Pause) statt gequetscht neben den Aktionen.
 Dokumente werden einzeln extrahiert (Zähler pro fertigem Dokument); zusätzlich zeigt das
 Badge LightRAGs aktuelle Live-Meldung (z.B. „Chunk 5 of 26 extracted …"), sodass man
 den Fortschritt auch innerhalb eines langen Dokuments sieht. Bei laufendem oder
 pausiertem Import lädt die Seite sich alle 5 s selbst neu, ohne dass man ein MCP-Tool
 aufrufen muss. Jede Karte hat folgende Buttons (**Icon-only** mit Inline-SVG —
 rendern zuverlässig unabhängig vom Emoji-Font; die Beschriftung erscheint als
-Tooltip erst nach kurzem Verweilen mit der Maus, Löschen hovert rot, der Rest grün):
+Tooltip erst nach kurzem Verweilen mit der Maus, Löschen hovert rot, der Rest im Akzent):
 
 - **Pause / Fortsetzen / Stop** (nur bei laufendem/pausiertem Ingest): greift
   **nach dem aktuellen Batch** (`INGEST_BATCH` Docs, default 5 — ein Batch wird
