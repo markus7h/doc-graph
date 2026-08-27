@@ -84,6 +84,18 @@ EMBED_TIMEOUT = int(os.environ.get("EMBED_TIMEOUT", "180"))
 # Entity-/Relation-Beschreibungen, die LightRAG frei zusammenbaut — die kann
 # CHUNK_TOKEN_SIZE prinzipiell nicht deckeln. Muss <= -ub des Servers sein.
 EMBED_MAX_TOKENS = int(os.environ.get("EMBED_MAX_TOKENS", "2048"))
+# Tags, die NICHT in den Metadaten-Header gehoeren (Komma-Liste, "" schaltet ab).
+# Grund: der Header geht in _hash, und _entscheide_doc ueberspringt ein Dokument
+# nur bei gleichem Hash. paperless-ai schreibt seinen Bookkeeping-Tag in jedes
+# Dokument zurueck, das es verarbeitet hat — damit gilt es fuer doc-graph als
+# geaendert und wird neu extrahiert, obwohl sich inhaltlich nichts getan hat.
+# Gemessen 2026-08-27 an future-fund: 230 von 263 Dokumenten waeren so bei JEDEM
+# Lauf neu durch die LLM-Extraktion gegangen; mit Filter sind es 33 (die echt
+# geaenderten). Solche Tags sagen etwas ueber die Verarbeitung, nichts ueber das
+# Dokument — sie haben im Graph ohnehin nichts verloren.
+INGEST_IGNORE_TAGS = {t.strip() for t in
+                      os.environ.get("INGEST_IGNORE_TAGS", "paperless-ai").split(",")
+                      if t.strip()}
 # Maximale ANZAHL Inputs pro Embedding-Request. EMBED_MAX_TOKENS deckelt die
 # Laenge jedes einzelnen Inputs, nicht die Menge — und LightRAG uebergibt beim
 # Merge alles auf einmal. In einem gefuellten Index sind das schnell vierstellig
@@ -1124,7 +1136,8 @@ async def ingest_paperless(
 
         async for doc in _paperless_documents(client, params):
             doc_key = f"paperless:{doc['id']}"
-            tag_names = [tag_map[t] for t in doc.get("tags", []) if t in tag_map]
+            tag_names = [tag_map[t] for t in doc.get("tags", [])
+                         if t in tag_map and tag_map[t] not in INGEST_IGNORE_TAGS]
             text = _doc_to_text(
                 doc, corr_map.get(doc.get("correspondent")),
                 tag_names=tag_names,

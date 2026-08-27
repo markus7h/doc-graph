@@ -413,6 +413,15 @@ von „was behauptet die Gegenseite" (query auf dem Fall-Projekt).
   `model_check_report.md` (`EMPFEHLUNG: bleiben` / `EMPFEHLUNG: wechseln zu <tag>`).
 - **EMBED_DIM darf sich nachträglich nicht ändern** — Embedding-Modell pro
   Projekt festnageln, sonst Index neu aufbauen.
+- **`INGEST_IGNORE_TAGS`** (default `paperless-ai`): Paperless-Tags, die **nicht**
+  in den Metadaten-Header wandern. Der Header geht in den Manifest-Hash, und ein
+  Dokument wird nur bei gleichem Hash übersprungen. paperless-ai schreibt seinen
+  Bookkeeping-Tag in jedes verarbeitete Dokument zurück — ohne diesen Filter gilt
+  jedes davon als geändert und läuft erneut durch die LLM-Extraktion. Gemessen
+  2026-08-27 an `future-fund`: **230 von 263** Dokumenten wären bei *jedem* Lauf
+  neu extrahiert worden, mit Filter sind es 33 (die echt geänderten). Komma-Liste;
+  `""` schaltet den Filter ab. Fachliche Tags ändern den Hash weiterhin, eine
+  nachträgliche Verschlagwortung wird also nach wie vor indexiert.
 - **`EMBED_MAX_TOKENS`** (default 1800): Obergrenze pro Embedding-Input, muss
   `<=` dem `-ub` des llama-servers sein (llm-stack: 2048 auf beiden Hosts).
   1800 statt 2048, seit die Embeddings über den Router laufen: der Zeichen-Cap
