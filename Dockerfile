@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends poppler-utils \
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY server.py config.py backup.py graphview.py clauses.py backfill_fundstellen.py ingest-begin.sh ingest-end.sh test_backup.py test_ingest_extras.py test_embed_cap.py test_fundstellen.py test_ignore_tags.py ./
+COPY server.py config.py backup.py graphview.py clauses.py backfill_fundstellen.py ingest-begin.sh ingest-end.sh test_backup.py test_ingest_extras.py test_embed_cap.py test_fundstellen.py test_ignore_tags.py test_export.py ./
 
 # Tiktoken-Cache vorab laden, damit der Container offline lauffähig ist
 RUN python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')" || true
