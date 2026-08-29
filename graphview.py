@@ -541,6 +541,42 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
 </body></html>"""
 
 
+# Was im Chat gesagt wird, was daraufhin laeuft, und was es erspart. Der
+# Einstieg der Hilfe: die Werkzeuge darunter beantworten "und wie ruft man das
+# direkt auf?", nicht umgekehrt.
+_HILFE_CHAT = [
+    ("Was sagen die Bedingungen zur Befristung eines Anerkenntnisses?",
+     'get_clause("bu-avb", "§ 5")',
+     "Der Wortlaut der Klausel, mit Dokumenttitel darüber. Passt die Nummer "
+     "nicht, kommt die Liste aller Klauseln zurück und ich frage nach.",
+     "Kein Blättern im Bedingungswerk, und der Text ist der echte — nicht "
+     "das, was ein Modell dazu erinnert."),
+    ("Was liegt zu der Sache überhaupt vor?",
+     'list_projects()\n'
+     'query("future-fund", "Welche Schreiben liegen vor?", only_context=True)',
+     "Die Projekte mit Dokumentzahl, dann die Fundstellen zur Frage — roh, "
+     "gelesen wird von mir im Chat.",
+     "Ein Überblick über hunderte Dokumente, ohne eines davon zu öffnen."),
+    ("Was weißt du über die ERGO Pensionskasse in dem Bestand?",
+     'get_entity("future-fund", "ERGO Pensionskasse AG", top_k=15)',
+     "Die Entität mit ihren Nachbarn: welche Dokumente, welche Beziehungen, "
+     "welche Vorgänge daran hängen.",
+     "Zeigt Zusammenhänge, nach denen man nicht gesucht hätte — der Graph "
+     "kennt sie schon."),
+    ("Neue Post ist in Paperless, Tag <i>future-fund</i>.",
+     'ingest_paperless("future-fund", tag="future-fund")\n'
+     'ingest_status("future-fund")',
+     "Nur das Neue wird indexiert, erkannt am Inhalts-Hash. Der Lauf arbeitet "
+     "im Hintergrund, der Status zeigt den echten Fortschritt.",
+     "Kein Neuaufbau, kein manuelles Nachhalten, was schon drin war."),
+    ("Leg mir daraus einen Fall an.",
+     'new_case_from_docgraph("future-fund", gebiet="berufsunfaehigkeit")',
+     "case-assist holt die Dokumente hier im Volltext ab und baut daraus "
+     "einen Fall: Fakten, Regelungen, Auffächerung gegen das Regelwerk.",
+     "Dieselbe Textbasis in beiden Systemen, keine zweite Paperless-Runde — "
+     "und die Dokumentschlüssel kommen als Beleg-Anker mit."),
+]
+
 _HILFE_WERKZEUGE = [
     ("Wortlaut einer Klausel — deterministisch, kein Modell",
      'get_clause("bu-avb", "§ 2")',
@@ -609,6 +645,12 @@ def hilfe_html() -> str:
     """Was doc-graph für ein Projekt kann, mit aufrufbaren Beispielen — und
     der Loop, in dem es mit case-assist zusammenspielt. Dieselbe Seite liegt
     unter case-assist.lan/hilfe; die volle Referenz steht in luecken-loop.md."""
+    chat = "".join(
+        f'<div class="hcard"><b>Du:</b> \u201e{frage}\u201c'
+        f"<pre>{_esc(kette)}</pre>"
+        f"<p><b>Zurück kommt:</b> {ergebnis}<br>"
+        f"<b>Erspart:</b> {spart}</p></div>"
+        for frage, kette, ergebnis, spart in _HILFE_CHAT)
     karten = "".join(
         f'<div class="hcard"><b>{t}</b><pre>{_esc(a)}</pre><p>{x}</p></div>'
         for t, a, x in _HILFE_WERKZEUGE)
@@ -649,6 +691,12 @@ def hilfe_html() -> str:
 Tatsache steht. <b>case-assist</b> weiß deterministisch, <i>welche</i> Tatsache
 einem Fall noch fehlt. Die Wertung trifft in beiden Fällen der Mensch.</p>
 
+<h2>So läuft das im Gespräch</h2>
+<p class="sub">Der normale Weg ist der Chat in Claude Code — du sagst, was du
+wissen willst, Claude ruft die Werkzeuge auf. Die Aufrufe stehen hier nur mit
+dabei, damit nachvollziehbar bleibt, was passiert ist.</p>
+{chat}
+
 <h2>Was doc-graph für ein Projekt kann</h2>
 <p class="sub">Die Aufrufe gehen in Claude Code an den doc-graph-Server.
 <code>bu-avb</code> ist hier ein Bedingungswerk, <code>future-fund</code> eine
@@ -670,6 +718,18 @@ offen — obwohl der Nachtrag durchging.</p></div>
 <div class="hcard"><b>Findet doc-graph nichts, ist das das Ergebnis</b>
 <p>Die Lücke bleibt dann offen. Eine erfundene Tatsache ist schlimmer als eine
 fehlende.</p></div>
+
+<h2>Warum das schneller ist</h2>
+<div class="hcard"><p>Drei Dinge verschieben sich, und nur diese drei: Das
+<b>Suchen</b> macht ein Index in Sekunden statt du in Ordnern. Der
+<b>Wortlaut</b> kommt exakt aus dem Klausel-Store, statt paraphrasiert aus
+einem Modell. Und die <b>Vollständigkeit</b> — welche Norm hängt noch an
+welcher fehlenden Tatsache — rechnet case-assist deterministisch gegen den
+Referenzgraphen.</p>
+<p>Was sich <i>nicht</i> verschiebt: die Wertung. Unbestimmte Rechtsbegriffe
+bleiben leer, auch wenn ein Dokument sie behauptet; ein Nachtrag wird erst
+nach deiner Bestätigung geschrieben. Das System kommt bis an die Entscheidung
+heran und hört dort auf.</p></div>
 
 <p class="sub" style="margin-top:20px">Der vollständige Ablauf mit allen
 Tool-Signaturen, Wächtern und einem Beispiel-Durchgang steht im case-assist-Repo
