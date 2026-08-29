@@ -268,7 +268,7 @@ def _card_backup(e: str, backups: list[dict]) -> str:
                f'onsubmit="return confirm(\'Projekt &quot;{e}&quot; durch diesen Stand ERSETZEN? '
                f'Der jetzige Stand geht verloren.\')">'
                f'<input type="hidden" name="project_id" value="{e}">'
-               f'<select name="name" style="font:inherit;font-size:12px;border:none;background:none;color:var(--muted);max-width:170px">{opts}</select>'
+               f'<select name="name" style="font:inherit;font-size:13px;border:none;background:none;color:var(--muted);max-width:170px">{opts}</select>'
                f'{_icon_btn("restore", "Gewählten Stand zurückspielen")}</form>')
     return save + restore
 
@@ -342,7 +342,7 @@ def _flagged_section(p: str, flags: dict) -> str:
             state = f'<span class="badge {bcls}">{blabel}</span>'
             btns = _btn(doc_key, "open", "Zurücksetzen", False)
         return (f'<div class="flagrow"><div class="left">'
-                f'<span class="nm" style="font-size:13px">{title}</span>{meta}{state}</div>'
+                f'<span class="nm" style="font-size:14px">{title}</span>{meta}{state}</div>'
                 f'<div class="actions">{btns}</div></div>')
     rows = "\n".join(_item(k, v) for k, v in sorted(flags.items()))
     return (f'<div class="flagged"><div class="flaghead">⚠ Übergroße Dokumente — '
@@ -454,10 +454,10 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
 <style>
   :root{{--bg:#fafafa;--card:#fff;--border:#ececec;--accent:#3a5a9b;--ah:#2c4577;--text:#333;--muted:#666}}
   *{{box-sizing:border-box;margin:0;padding:0}}
-  body{{background:var(--bg);color:var(--text);font-family:"Source Sans 3","Source Sans Pro",Arial,sans-serif;letter-spacing:.15pt;font-size:14px;padding:32px;max-width:760px;margin:0 auto}}
+  body{{background:var(--bg);color:var(--text);font-family:"Source Sans 3","Source Sans Pro",Arial,sans-serif;letter-spacing:.15pt;font-size:15px;padding:32px;max-width:760px;margin:0 auto}}
   h1{{font-size:22px;font-weight:700;margin-bottom:4px}}
-  .sub{{color:var(--muted);font-size:13px;margin-bottom:24px}}
-  h2{{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 12px}}
+  .sub{{color:var(--muted);font-size:14px;margin-bottom:24px}}
+  h2{{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 12px}}
   .brand{{display:flex;align-items:center;gap:12px;margin-bottom:4px}}
   .brand h1{{margin:0}}
   .logo{{flex:none}}
@@ -479,7 +479,7 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
   .ib svg{{display:block;pointer-events:none}}
   /* Tooltip: erscheint per CSS erst nach ~1,8 s Hover (transition-delay), nicht der native title. */
   .ib::after{{content:attr(data-tip);position:absolute;top:calc(100% + 7px);left:50%;
-    transform:translateX(-50%);background:#333;color:#fff;font-size:11px;font-weight:500;
+    transform:translateX(-50%);background:#333;color:#fff;font-size:12px;font-weight:500;
     line-height:1.1;white-space:nowrap;padding:5px 8px;border-radius:5px;
     box-shadow:0 2px 8px rgba(0,0,0,.18);opacity:0;pointer-events:none;transition:opacity .12s ease;z-index:30}}
   .ib:hover::after{{opacity:1;transition-delay:1.8s}}
@@ -490,34 +490,34 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
   .prog .fill.paused{{background:#ffb300}}
   .prog-ctl{{display:flex;gap:6px;flex-shrink:0}}
   .left{{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;min-width:0}}
-  .nm{{font-weight:600;font-size:15px;color:var(--text);text-decoration:none}}
+  .nm{{font-weight:600;font-size:16px;color:var(--text);text-decoration:none}}
   a.nm.open:hover .go{{text-decoration:underline}}
-  .go{{color:var(--accent);font-size:13px;font-weight:600;white-space:nowrap}}
-  .hint,.empty{{color:var(--muted);font-size:12px}}
-  .badge{{font-size:12px;font-weight:600;padding:2px 9px;border-radius:20px;white-space:nowrap}}
+  .go{{color:var(--accent);font-size:14px;font-weight:600;white-space:nowrap}}
+  .hint,.empty{{color:var(--muted);font-size:13px}}
+  .badge{{font-size:13px;font-weight:600;padding:2px 9px;border-radius:20px;white-space:nowrap}}
   .badge.run{{background:#fff8e1;color:#8a6d00;border:1px solid #ffe082}}
   .badge.done{{background:#e8edf7;color:var(--ah);border:1px solid #c8e6c9}}
   .badge.err{{background:#fff5f5;color:#c62828;border:1px solid #ffcdd2}}
   .del, .del button{{background:none;border:1px solid var(--border);color:var(--muted);
-    border-radius:6px;padding:5px 11px;font-size:12px;cursor:pointer;white-space:nowrap;transition:all .15s;margin:0;display:inline-block}}
+    border-radius:6px;padding:5px 11px;font-size:13px;cursor:pointer;white-space:nowrap;transition:all .15s;margin:0;display:inline-block}}
   .del:hover, .del button:hover{{border-color:#dd3333;color:#dd3333;background:#fff5f5}}
-  code{{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:1px 5px}}
-  .steps{{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px 22px;font-size:13px;line-height:1.7}}
+  code{{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:1px 5px}}
+  .steps{{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px 22px;font-size:14px;line-height:1.7}}
   .steps ol{{margin:8px 0 0 18px}}
-  .bk{{list-style:none;margin:0;font-size:12px;color:var(--muted)}}
+  .bk{{list-style:none;margin:0;font-size:13px;color:var(--muted)}}
   .bkrow{{display:flex;align-items:center;gap:10px;padding:6px 0;border-top:1px solid var(--border)}}
   .bkrow:first-child{{border-top:none}}
   .bktime{{font-weight:600;color:var(--text);min-width:120px}}
   .bksize{{flex:1;color:var(--muted)}}
   .flagged{{margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}}
-  .flaghead{{font-size:12px;color:#8a6d00;background:#fff8e1;border:1px solid #ffe082;
+  .flaghead{{font-size:13px;color:#8a6d00;background:#fff8e1;border:1px solid #ffe082;
     border-radius:6px;padding:6px 10px;margin-bottom:8px}}
   .flagrow{{display:flex;align-items:center;justify-content:space-between;gap:12px;
     padding:6px 0;border-top:1px solid var(--border)}}
   .flagrow:first-of-type{{border-top:none}}
   .flagrow .left{{flex-direction:column;align-items:flex-start;gap:2px}}
   .dec, .dec button{{background:none;border:1px solid var(--border);color:var(--muted);
-    border-radius:6px;padding:5px 11px;font-size:12px;cursor:pointer;white-space:nowrap;
+    border-radius:6px;padding:5px 11px;font-size:13px;cursor:pointer;white-space:nowrap;
     transition:all .15s;margin:0;display:inline-block}}
   .dec:hover, .dec button:hover{{border-color:#888;color:var(--text);background:var(--bg)}}
   .dec.ok:hover, .dec.ok button:hover{{border-color:var(--accent);color:var(--accent);background:#e8edf7}}
@@ -663,26 +663,28 @@ def hilfe_html() -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>doc-graph · Hilfe</title>
 {_FAVICON_LINK}
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
   :root{{--bg:#fafafa;--card:#fff;--border:#ececec;--accent:#3a5a9b;--text:#333;--muted:#666}}
   *{{box-sizing:border-box;margin:0;padding:0}}
-  body{{background:var(--bg);color:var(--text);font-family:"Source Sans 3",Arial,sans-serif;
-    font-size:14px;line-height:1.6;padding:32px;max-width:760px;margin:0 auto}}
+  body{{background:var(--bg);color:var(--text);font-family:"Source Sans 3","Source Sans Pro",Arial,sans-serif;
+    letter-spacing:.15pt;font-size:15px;line-height:1.6;padding:32px;max-width:760px;margin:0 auto}}
   h1{{font-size:22px;margin-bottom:4px}}
-  h2{{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;
+  h2{{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;
     color:var(--muted);margin:28px 0 12px}}
-  p.sub{{color:var(--muted);font-size:13px;margin-bottom:8px}}
+  p.sub{{color:var(--muted);font-size:14px;margin-bottom:8px}}
   a{{color:var(--accent)}}
   .hcard{{background:var(--card);border:1px solid var(--border);
     border-left:3px solid var(--accent);border-radius:10px;padding:14px 18px;margin-bottom:10px}}
-  .hcard p{{color:var(--muted);font-size:13px;margin-top:8px}}
+  .hcard p{{color:var(--muted);font-size:14px;margin-top:8px}}
   pre{{background:var(--bg);border:1px solid var(--border);border-radius:6px;
-    padding:8px 10px;margin-top:8px;font-size:12.5px;overflow-x:auto}}
-  code{{background:var(--bg);border-radius:4px;padding:1px 4px;font-size:12.5px}}
-  table{{width:100%;border-collapse:collapse;font-size:13px;background:var(--card);
+    padding:8px 10px;margin-top:8px;font-size:13.5px;overflow-x:auto}}
+  code{{background:var(--bg);border-radius:4px;padding:1px 4px;font-size:13.5px}}
+  table{{width:100%;border-collapse:collapse;font-size:14px;background:var(--card);
     border:1px solid var(--border);border-radius:10px;overflow:hidden}}
   th,td{{text-align:left;padding:8px 12px;border-top:1px solid var(--border);vertical-align:top}}
-  th{{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);border-top:none}}
+  th{{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);border-top:none}}
   td code{{white-space:nowrap}}
 </style></head><body>
 <p class="sub"><a href="/">← Übersicht</a></p>
@@ -772,45 +774,45 @@ def graph_html(title: str, projects: list[str] | None = None,
 <style>
   :root{{--bg:#fafafa;--card:#fff;--border:#ececec;--accent:#3a5a9b;--ah:#2c4577;--text:#333;--muted:#666}}
   *{{box-sizing:border-box;margin:0;padding:0}}
-  body{{background:var(--bg);color:var(--text);font-family:"Source Sans 3","Source Sans Pro",Arial,sans-serif;letter-spacing:.15pt;font-size:14px;padding:20px}}
+  body{{background:var(--bg);color:var(--text);font-family:"Source Sans 3","Source Sans Pro",Arial,sans-serif;letter-spacing:.15pt;font-size:15px;padding:20px}}
   h1{{font-size:22px;font-weight:700;margin-bottom:4px}}
-  .sub{{color:var(--muted);font-size:13px;margin-bottom:12px}}
+  .sub{{color:var(--muted);font-size:14px;margin-bottom:12px}}
   .bar{{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:10px}}
-  .muted{{color:var(--muted);font-size:12px}}
+  .muted{{color:var(--muted);font-size:13px}}
   #netwrap{{position:relative}}
   #net{{height:78vh;background:var(--card);border:1px solid var(--border);border-radius:10px}}
   #info{{position:absolute;left:12px;right:12px;bottom:12px;max-height:38%;overflow:auto;
     background:var(--card);border:1px solid var(--border);border-radius:8px;
-    padding:10px 13px;box-shadow:0 3px 16px rgba(0,0,0,.10);font-size:13px;line-height:1.5;
+    padding:10px 13px;box-shadow:0 3px 16px rgba(0,0,0,.10);font-size:14px;line-height:1.5;
     display:none;pointer-events:none}}
   #info .hd{{display:flex;align-items:center;gap:8px;margin-bottom:5px;flex-wrap:wrap}}
-  #info .chip{{color:#fff;font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px}}
-  #info .nm{{font-weight:700;font-size:14px}}
+  #info .chip{{color:#fff;font-size:12px;font-weight:600;padding:2px 8px;border-radius:20px}}
+  #info .nm{{font-weight:700;font-size:15px}}
   #info .d{{color:var(--text);white-space:pre-wrap;word-break:break-word}}
   #leg{{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}}
-  #leg span{{font-size:12px;display:inline-flex;align-items:center;gap:5px;cursor:pointer}}
+  #leg span{{font-size:13px;display:inline-flex;align-items:center;gap:5px;cursor:pointer}}
   .dot{{width:11px;height:11px;border-radius:50%;display:inline-block}}
 </style></head><body>
 <h1>{title}</h1>
 <p class="sub"><span id="cnt">lädt…</span> &nbsp;·&nbsp; ziehen/scrollen zum Navigieren, Knoten/Kante anklicken für Details, Legende anklicken zum Filtern</p>
 <div class="bar">
-  <a href="../" style="text-decoration:none;background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:5px 11px;font-size:12px;white-space:nowrap;transition:all .15s;margin-right:6px" title="Zurück zur Projektübersicht">← Übersicht</a>
+  <a href="../" style="text-decoration:none;background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:5px 11px;font-size:13px;white-space:nowrap;transition:all .15s;margin-right:6px" title="Zurück zur Projektübersicht">← Übersicht</a>
   {proj_select}
   <form method="post" action="../refresh" style="margin:0;display:inline;margin-right:6px">
     <input type="hidden" name="project_id" value="{current}">
-    <button type="submit" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:5px 11px;font-size:12px;cursor:pointer;white-space:nowrap;transition:all .15s" title="Graph aus .graphml neu rendern">Aktualisieren</button>
+    <button type="submit" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:5px 11px;font-size:13px;cursor:pointer;white-space:nowrap;transition:all .15s" title="Graph aus .graphml neu rendern">Aktualisieren</button>
   </form>
   <form method="post" action="../rename" style="margin:0;display:inline;margin-right:6px" onsubmit="const n=prompt('Neuer Anzeigename:'); if(n===null) return false; document.querySelector('input[name=project_name]').value=n; return true;">
     <input type="hidden" name="project_id" value="{current}">
     <input type="hidden" name="project_name" value="">
-    <button type="submit" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:5px 11px;font-size:12px;cursor:pointer;white-space:nowrap;transition:all .15s" title="Anzeigenamen ändern">Umbenennen</button>
+    <button type="submit" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:5px 11px;font-size:13px;cursor:pointer;white-space:nowrap;transition:all .15s" title="Anzeigenamen ändern">Umbenennen</button>
   </form>
   <label class="muted"><input type="checkbox" id="phys" checked onchange="net&&net.setOptions({{physics:{{enabled:this.checked}}}})"> Physik</label>
   <label class="muted" title="Knoten anklicken, dann anhaken: zeigt nur dessen Nachbarschaft (Doppelklick setzt Anker um)"><input type="checkbox" id="focus" onchange="setFocus()"> nur Verbundene</label>
   <label class="muted" title="Nachbarschafts-Tiefe in Hops">Distanz <input type="number" id="depth" value="1" min="1" style="width:3em" onchange="fetchGraph()"></label>
   <span class="muted">Typ-Filter: Legende anklicken</span>
-  <button type="button" onclick="toggleAll()" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:5px 11px;font-size:12px;cursor:pointer;white-space:nowrap;transition:all .15s" title="Alle Typen ein- oder ausblenden">alle an/aus</button>
-  <input id="q" oninput="onSearch()" placeholder="Knoten suchen…" title="Sucht im ganzen Graph (Server); Treffer werden rot hervorgehoben und angefahren" style="font:inherit;font-size:12px;padding:5px 9px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text);width:11em">
+  <button type="button" onclick="toggleAll()" style="background:none;border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:5px 11px;font-size:13px;cursor:pointer;white-space:nowrap;transition:all .15s" title="Alle Typen ein- oder ausblenden">alle an/aus</button>
+  <input id="q" oninput="onSearch()" placeholder="Knoten suchen…" title="Sucht im ganzen Graph (Server); Treffer werden rot hervorgehoben und angefahren" style="font:inherit;font-size:13px;padding:5px 9px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text);width:11em">
 </div>
 <div id="netwrap"><div id="net"></div><div id="info"></div></div>
 <div id="leg"></div>
