@@ -244,6 +244,16 @@ Er bindet per Default auf `::` (`VIEWER_BIND`), der Socket bleibt dabei
 auch weiterhin über den published IPv4-Port. `VIEWER_BIND=0.0.0.0` erzwingt
 reines IPv4. Der MCP-Port (`MCP_PORT`) ist davon nicht betroffen.
 
+## Hilfe-Seite
+
+`http://<host>:5776/hilfe` (Link auf der Projektübersicht) — was doc-graph für
+ein Projekt kann, mit aufrufbaren Beispielen: `get_clause`, `query`,
+`get_entity`, `ingest_paperless`/`ingest_status`, `delete_documents` und der
+Volltext-Export. Dazu der Lücken-Loop mit case-assist als Acht-Zeilen-Tabelle
+und die zwei Stellen, an denen er üblicherweise hängt. Dieselbe Seite liegt
+unter `https://case-assist.lan/hilfe`; die vollständige Referenz steht im
+case-assist-Repo in `luecken-loop.md`.
+
 ## Volltext-Export
 
 `GET /<project_id>/export` (Viewer-Port, default 5776) gibt die **indexierten

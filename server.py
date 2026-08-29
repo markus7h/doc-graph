@@ -35,7 +35,7 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 
 from graphview import (
-    edge_dict, graph_html, graph_subset, index_html, node_dict,
+    edge_dict, graph_html, graph_subset, hilfe_html, index_html, node_dict,
 )
 
 import numpy as np
@@ -1671,6 +1671,9 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
         if m:
             self._serve_nodes(urllib.parse.unquote(m.group(1)), parsed.query)
             return
+        if parsed.path == "/hilfe":
+            self._html(hilfe_html())
+            return
         # Volltext-Export. Bewusst hier und nicht als MCP-Tool: eine Akte hat
         # Megabytes und sprengt jedes Token-Limit.
         m = re.match(r"^/([^/]+)/export$", parsed.path)
@@ -1691,10 +1694,15 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             return
         self._json(daten)
 
+    def _html(self, seite: str) -> None:
+        self._raus(seite.encode("utf-8"), "text/html")
+
     def _json(self, daten: dict) -> None:
-        body = json.dumps(daten).encode("utf-8")
+        self._raus(json.dumps(daten).encode("utf-8"), "application/json")
+
+    def _raus(self, body: bytes, typ: str) -> None:
         self.send_response(200)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Type", f"{typ}; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
