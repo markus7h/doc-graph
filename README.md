@@ -238,11 +238,10 @@ und die letzten Archive.
 
 Der Viewer ist ein stdlib-Fileserver (LAN-intern, kein Auth/HTTPS).
 
-Er bindet per Default auf `::` (`VIEWER_BIND`), der Socket bleibt dabei
-**dual-stack** — der Container ist also sowohl unter seiner IPv6 aus
-`fd00:24:9:68::/64` erreichbar (Caddy proxyt `docgraph.lan` direkt dorthin) als
-auch weiterhin über den published IPv4-Port. `VIEWER_BIND=0.0.0.0` erzwingt
-reines IPv4. Der MCP-Port (`MCP_PORT`) ist davon nicht betroffen.
+Er bindet fest auf `::`, der Socket bleibt dabei **dual-stack** — der Container
+ist also sowohl unter seiner IPv6 aus `fd00:24:9:68::/64` erreichbar (Caddy
+proxyt `docgraph.lan` direkt dorthin) als auch weiterhin über den published
+IPv4-Port. Der MCP-Port (`MCP_PORT`) ist davon nicht betroffen.
 
 Diese IPv6 wird in der Compose **fest zugewiesen**
 (`web_net.ipv6_address: fd00:24:9:68:23::5776`, Konvention: letztes Segment =

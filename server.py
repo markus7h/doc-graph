@@ -267,10 +267,12 @@ PAPERLESS_TOKEN = os.environ.get("PAPERLESS_TOKEN", "")
 # MAX_BACKUPS Archive; Intervall/An-Aus kommen aus .config.json (via Web-UI).
 MCP_PORT = int(os.environ.get("MCP_PORT", "5775"))
 VIEWER_PORT = int(os.environ.get("VIEWER_PORT", "5776"))
-# Default "::": der Container ist unter seiner IPv6 aus fd00:24:9:68::/64
-# erreichbar, Caddy proxyt docgraph.lan direkt dorthin. Der Socket bleibt
-# dual-stack (siehe _DualStackHTTPServer), IPv4 funktioniert also weiter.
-VIEWER_BIND = os.environ.get("VIEWER_BIND", "::")
+# Konstante, kein ENV: der Container muss unter seiner IPv6 aus
+# fd00:24:9:68::/64 erreichbar sein, Caddy proxyt docgraph.lan direkt dorthin.
+# Der Socket bleibt dual-stack (siehe _DualStackHTTPServer), IPv4 traegt also
+# weiter — es gibt keinen zweiten sinnvollen Wert. Ein IPv4-Literal ist auf dem
+# AF_INET6-Socket ohnehin nicht bindbar (gaierror beim Start).
+VIEWER_BIND = "::"
 # Hostname, unter dem der Viewer vom Browser erreichbar ist (für die zurückgegebene URL)
 PUBLIC_HOST = os.environ.get("PUBLIC_HOST", "localhost")
 
