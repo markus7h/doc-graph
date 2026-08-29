@@ -244,6 +244,27 @@ Er bindet per Default auf `::` (`VIEWER_BIND`), der Socket bleibt dabei
 auch weiterhin über den published IPv4-Port. `VIEWER_BIND=0.0.0.0` erzwingt
 reines IPv4. Der MCP-Port (`MCP_PORT`) ist davon nicht betroffen.
 
+## Volltext-Export
+
+`GET /<project_id>/export` (Viewer-Port, default 5776) gibt die **indexierten
+Dokumente im Volltext** zurück — als JSON, je Dokument `doc_key`, `titel`,
+`hash` (aus dem Ingest-Manifest), `fundstelle` und `text` samt Metadaten-Header.
+
+Der Endpunkt existiert für Systeme, die **dieselben Dokumente ein zweites Mal
+brauchen**: case-assist startet Fälle daraus, statt sie erneut aus Paperless zu
+ziehen. Beide Seiten arbeiten damit auf derselben Textbasis, und mit dem Text
+kommen Dokumentschlüssel und Inhalts-Hash mit — die Anker, an denen ein Beleg
+später hängen kann.
+
+```bash
+curl -s http://doc-graph:5776/akte/export | jq '.dokumente | length'
+```
+
+Bewusst **kein MCP-Tool**: eine Akte hat Megabytes und sprengt jedes
+Token-Limit. Gelesen wird `kv_store_full_docs.json` direkt, ohne die
+LightRAG-Instanz hochzufahren; während eines laufenden Ingests fehlt deshalb
+das zuletzt eingefügte Dokument.
+
 ## Backup
 
 Backups laufen **je Projekt** als eigenes `tar.gz` in einen gemounteten Ordner —

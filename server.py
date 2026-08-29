@@ -745,6 +745,42 @@ def _fundstelle(text: str) -> str:
     return ", ".join(teile)
 
 
+def _titel(text: str) -> str:
+    """Nur der Dokumenttitel aus dem Metadaten-Header (vgl. _fundstelle)."""
+    for zeile in text.split("\n\n", 1)[0].splitlines():
+        if zeile.startswith("Dokument: "):
+            return zeile[len("Dokument: "):].strip()
+    return ""
+
+
+def export_daten(project_id: str) -> dict:
+    """Volltext je Dokument — die Textbasis, die schon im Graph steckt.
+
+    Fuer Systeme, die dieselben Dokumente ein zweites Mal brauchen (case-assist
+    startet Faelle daraus), statt sie erneut aus Paperless zu ziehen. Mit dem
+    Text kommen Dokumentschluessel und Inhalts-Hash mit: das sind die Anker, an
+    denen ein Beleg spaeter haengen kann.
+
+    ponytail: liest kv_store_full_docs.json direkt, statt die LightRAG-Instanz
+    hochzufahren. Waehrend eines laufenden Ingests fehlt damit das zuletzt
+    eingefuegte Dokument; wer den laufenden Stand braucht, muss ueber
+    rag.full_docs gehen.
+    """
+    validate_project(project_id)
+    pfad = PROJECTS_DIR / project_id / "kv_store_full_docs.json"
+    if not pfad.exists():
+        raise FileNotFoundError(project_id)
+    volltexte = json.loads(pfad.read_text())
+    manifest = _load_manifest(project_id)
+    return {"project_id": project_id,
+            "dokumente": [{"doc_key": key,
+                           "titel": _titel(d.get("content", "")) or key,
+                           "hash": manifest.get(key, ""),
+                           "fundstelle": d.get("file_path", ""),
+                           "text": d.get("content", "")}
+                          for key, d in sorted(volltexte.items())]}
+
+
 # ----------------------------------------------------------------------------
 # MCP-Server + Tools
 # ----------------------------------------------------------------------------
@@ -1635,7 +1671,33 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
         if m:
             self._serve_nodes(urllib.parse.unquote(m.group(1)), parsed.query)
             return
+        # Volltext-Export. Bewusst hier und nicht als MCP-Tool: eine Akte hat
+        # Megabytes und sprengt jedes Token-Limit.
+        m = re.match(r"^/([^/]+)/export$", parsed.path)
+        if m:
+            self._serve_export(urllib.parse.unquote(m.group(1)))
+            return
         super().do_GET()
+
+    def _serve_export(self, project_id: str):
+        """Antwortet mit dem Volltext-JSON des Projekts (siehe export_daten)."""
+        try:
+            daten = export_daten(project_id)
+        except ValueError:
+            self.send_error(400, "invalid project_id")
+            return
+        except FileNotFoundError:
+            self.send_error(404, "kein Projekt oder noch nichts indexiert")
+            return
+        self._json(daten)
+
+    def _json(self, daten: dict) -> None:
+        body = json.dumps(daten).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _serve_nodes(self, project_id: str, query: str):
         """Antwortet mit dem gedeckelten Knoten/Kanten-JSON für den Viewer."""
@@ -1664,12 +1726,7 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             gd["nodes"], gd["edges"], gd["adj"], gd["degree"],
             limit=limit, focus=focus, depth=_int("depth", 1), q=term, hide=hide,
         )
-        body = json.dumps(sub).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        self._json(sub)
 
     def do_POST(self):  # noqa: N802 (stdlib-Signatur)
         if self.path == "/refresh":
