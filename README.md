@@ -252,8 +252,10 @@ Caddy dialt weiter auf die alte und liefert 502 — der Viewer bleibt dabei übe
 
 ## Hilfe-Seite
 
-`http://<host>:5776/hilfe` (Link auf der Projektübersicht) — was doc-graph für
-ein Projekt kann, mit aufrufbaren Beispielen: `get_clause`, `query`,
+`http://<host>:5776/hilfe` (Link auf der Projektübersicht) — beginnt mit
+**Chat-Beispielen**: was man in Claude Code sagt, was daraufhin läuft und was
+es erspart. Darunter, was doc-graph für ein Projekt kann, mit aufrufbaren
+Beispielen: `get_clause`, `query`,
 `get_entity`, `ingest_paperless`/`ingest_status`, `delete_documents` und der
 Volltext-Export. Dazu der Lücken-Loop mit case-assist als Acht-Zeilen-Tabelle
 und die zwei Stellen, an denen er üblicherweise hängt. Dieselbe Seite liegt
