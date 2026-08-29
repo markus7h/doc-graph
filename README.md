@@ -244,6 +244,12 @@ Er bindet per Default auf `::` (`VIEWER_BIND`), der Socket bleibt dabei
 auch weiterhin über den published IPv4-Port. `VIEWER_BIND=0.0.0.0` erzwingt
 reines IPv4. Der MCP-Port (`MCP_PORT`) ist davon nicht betroffen.
 
+Diese IPv6 wird in der Compose **fest zugewiesen**
+(`web_net.ipv6_address: fd00:24:9:68:23::5776`, Konvention: letztes Segment =
+Port). Ohne die Zuweisung vergibt Docker beim Recreate eine beliebige Adresse,
+Caddy dialt weiter auf die alte und liefert 502 — der Viewer bleibt dabei über
+`http://<host>:5776` erreichbar, nur `https://docgraph` nicht.
+
 ## Hilfe-Seite
 
 `http://<host>:5776/hilfe` (Link auf der Projektübersicht) — was doc-graph für
