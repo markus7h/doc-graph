@@ -523,7 +523,7 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
   .dec.ok:hover, .dec.ok button:hover{{border-color:var(--accent);color:var(--accent);background:#e8edf7}}
 </style></head><body>
 <div class="brand">{_LOGO}<h1>doc-graph</h1></div>
-<p class="sub">Knowledge Graphs aus deinen Dokumenten — pro Projekt ein Graph. Klick ein Projekt an, um den interaktiven Graphen zu öffnen.</p>
+<p class="sub">Knowledge Graphs aus deinen Dokumenten — pro Projekt ein Graph. Klick ein Projekt an, um den interaktiven Graphen zu öffnen. <a href="/hilfe">Hilfe</a></p>
 <h2>Projekte</h2>
 <div class="grid">
 {rows}
@@ -538,6 +538,142 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
     <li><code>query(project="x", question="…")</code> — den Graphen befragen</li>
   </ol>
 </div>
+</body></html>"""
+
+
+_HILFE_WERKZEUGE = [
+    ("Wortlaut einer Klausel — deterministisch, kein Modell",
+     'get_clause("bu-avb", "§ 2")',
+     "Exakter Text aus dem Klausel-Store, sofort und zitierfähig. Die "
+     "Schreibweise ist tolerant: <code>§ 2</code>, <code>§2</code>, "
+     "<code>2</code>, <code>Artikel 3</code>, <code>Ziffer 4</code>. Trifft "
+     "nichts, kommt die Liste aller Klausel-IDs zurück — faktisch das "
+     "Inhaltsverzeichnis. Nur in Projekten, die mit "
+     "<code>regelwerk=True</code> indexiert wurden. Für Bedingungstext "
+     "<b>immer</b> dieses Werkzeug, nie eine Suche."),
+    ("Tatsache in der Akte suchen",
+     'query("future-fund",\n'
+     '      "Welche Schreiben des Versicherers liegen vor?",\n'
+     '      only_context=True)',
+     "Liefert die rohen Fundstellen, <b>keine fertige Antwort</b> — gelesen "
+     "wird von dir oder Claude. <code>mode</code>: <code>local</code> "
+     "(entitätsnah), <code>global</code> (übergreifende Muster), "
+     "<code>hybrid</code> (Standard), <code>naive</code> (nur "
+     "Textähnlichkeit). <code>only_context=False</code> nicht setzen: dann "
+     "formuliert das lokale Modell auf der geteilten GPU und läuft in den "
+     "Timeout."),
+    ("Alles zu einer Person, Firma oder Sache",
+     'get_entity("future-fund", "ERGO Pensionskasse AG", top_k=15)',
+     "Die Entität mit ihren Nachbarn und Beziehungen. <code>top_k</code> ist "
+     "die wirksame Stellschraube, nicht das Token-Budget — höher setzen "
+     "kostet schnell zehntausende Zeichen."),
+    ("Dokumente hineinlegen",
+     'ingest_paperless("future-fund", tag="future-fund")\n'
+     'ingest_paperless("bu-avb", tag="bu-bedingungen", regelwerk=True)\n'
+     'ingest_status("future-fund")',
+     "Delta-Indexierung: nur Neues und Geändertes, erkannt am Inhalts-Hash. "
+     "Der Lauf arbeitet im Hintergrund — <code>ingest_status</code> zeigt die "
+     "echten Zustände (nur <code>processed</code> heißt wirklich im Graph), "
+     "<code>ingest_control</code> pausiert, setzt fort oder bricht ab."),
+    ("Aufräumen",
+     'delete_documents("future-fund", only_failed=True)',
+     "Einzelne Dokumente aus dem Index werfen (Chunks, Entitäten, Vektoren) — "
+     "etwa Dubletten oder Dokumente, die reproduzierbar scheitern. Die "
+     "Quellen in Paperless bleiben unberührt."),
+    ("Volltext herausholen",
+     'GET /&lt;project_id&gt;/export',
+     "Die indexierten Dokumente im Volltext, je Dokument mit "
+     "Dokumentschlüssel, Inhalts-Hash und Fundstelle. Damit startet "
+     "case-assist Fälle aus einem Projekt, statt die Dokumente ein zweites "
+     "Mal aus Paperless zu ziehen."),
+]
+
+_HILFE_LOOP = [
+    ("case-assist", "list_cases()", "Fall wählen"),
+    ("case-assist", "open_questions(fall_id)",
+     "die offenen Tatsachenlücken als JSON"),
+    ("Mensch", "—", "Frage schärfen — die Frage aus dem Referenzgraphen kennt "
+     "weder Namen noch Zeiträume dieses Falls"),
+    ("doc-graph", "get_clause(…) oder query(…)",
+     "Klauselwortlaut bzw. Fundstellen"),
+    ("Claude + Mensch", "—",
+     "auswerten: was steht wörtlich da, was ist gefolgert, was bleibt offen"),
+    ("Claude", "—", "Fakt-JSON vorschlagen, <b>zur Bestätigung</b>"),
+    ("case-assist", "amend_case(fall_id, antwort_json, beleg)",
+     "Nachtrag plus frische Auffächerung"),
+    ("—", "zurück zu 2", "leere Liste = alle Tatsachenlücken gedeckt"),
+]
+
+
+def hilfe_html() -> str:
+    """Was doc-graph für ein Projekt kann, mit aufrufbaren Beispielen — und
+    der Loop, in dem es mit case-assist zusammenspielt. Dieselbe Seite liegt
+    unter case-assist.lan/hilfe; die volle Referenz steht in luecken-loop.md."""
+    karten = "".join(
+        f'<div class="hcard"><b>{t}</b><pre>{_esc(a)}</pre><p>{x}</p></div>'
+        for t, a, x in _HILFE_WERKZEUGE)
+    zeilen = "".join(
+        f"<tr><td>{i}</td><td>{wer}</td><td><code>{_esc(aufruf)}</code></td>"
+        f"<td>{ergebnis}</td></tr>"
+        for i, (wer, aufruf, ergebnis) in enumerate(_HILFE_LOOP, 1))
+    return f"""<!doctype html>
+<html lang="de"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>doc-graph · Hilfe</title>
+{_FAVICON_LINK}
+<style>
+  :root{{--bg:#fafafa;--card:#fff;--border:#ececec;--accent:#3a5a9b;--text:#333;--muted:#666}}
+  *{{box-sizing:border-box;margin:0;padding:0}}
+  body{{background:var(--bg);color:var(--text);font-family:"Source Sans 3",Arial,sans-serif;
+    font-size:14px;line-height:1.6;padding:32px;max-width:760px;margin:0 auto}}
+  h1{{font-size:22px;margin-bottom:4px}}
+  h2{{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;
+    color:var(--muted);margin:28px 0 12px}}
+  p.sub{{color:var(--muted);font-size:13px;margin-bottom:8px}}
+  a{{color:var(--accent)}}
+  .hcard{{background:var(--card);border:1px solid var(--border);
+    border-left:3px solid var(--accent);border-radius:10px;padding:14px 18px;margin-bottom:10px}}
+  .hcard p{{color:var(--muted);font-size:13px;margin-top:8px}}
+  pre{{background:var(--bg);border:1px solid var(--border);border-radius:6px;
+    padding:8px 10px;margin-top:8px;font-size:12.5px;overflow-x:auto}}
+  code{{background:var(--bg);border-radius:4px;padding:1px 4px;font-size:12.5px}}
+  table{{width:100%;border-collapse:collapse;font-size:13px;background:var(--card);
+    border:1px solid var(--border);border-radius:10px;overflow:hidden}}
+  th,td{{text-align:left;padding:8px 12px;border-top:1px solid var(--border);vertical-align:top}}
+  th{{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);border-top:none}}
+  td code{{white-space:nowrap}}
+</style></head><body>
+<p class="sub"><a href="/">← Übersicht</a></p>
+<h1>Hilfe</h1>
+<p class="sub">Zwei Systeme, klare Rollen: <b>doc-graph</b> weiß, <i>wo</i> eine
+Tatsache steht. <b>case-assist</b> weiß deterministisch, <i>welche</i> Tatsache
+einem Fall noch fehlt. Die Wertung trifft in beiden Fällen der Mensch.</p>
+
+<h2>Was doc-graph für ein Projekt kann</h2>
+<p class="sub">Die Aufrufe gehen in Claude Code an den doc-graph-Server.
+<code>bu-avb</code> ist hier ein Bedingungswerk, <code>future-fund</code> eine
+Akte.</p>
+{karten}
+
+<h2>Eine Lücke in einem Fall schließen</h2>
+<p class="sub">Der Loop zwischen beiden Systemen — auslösen mit
+<code>/fall-luecke</code> oder formlos „Lücke schließen".</p>
+<table><tr><th>#</th><th>Wer</th><th>Aufruf</th><th>Ergebnis</th></tr>
+{zeilen}</table>
+
+<div class="hcard" style="margin-top:10px"><b>Der häufigste Stolperstein</b>
+<p>Ein Merkmal gilt erst als gedeckt, wenn ein Fakt es in
+<code>einordnung</code> trägt. Trifft die <code>einordnung</code> die
+<code>merkmal_id</code> aus Schritt 2 nicht <i>exakt</i>, bleibt die Lücke
+offen — obwohl der Nachtrag durchging.</p></div>
+
+<div class="hcard"><b>Findet doc-graph nichts, ist das das Ergebnis</b>
+<p>Die Lücke bleibt dann offen. Eine erfundene Tatsache ist schlimmer als eine
+fehlende.</p></div>
+
+<p class="sub" style="margin-top:20px">Der vollständige Ablauf mit allen
+Tool-Signaturen, Wächtern und einem Beispiel-Durchgang steht im case-assist-Repo
+in <code>luecken-loop.md</code>.</p>
 </body></html>"""
 
 
