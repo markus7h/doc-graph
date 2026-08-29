@@ -79,8 +79,15 @@ services:
       # sonst legt Docker es leer als root an); primäre Quelle bleibt Paperless.
       # - /home/markus/dokumente:/data/inputs:ro
     networks:
-      - default
-      - web_net
+      default:
+      # Feste IPv6 statt dynamischer Vergabe: Caddy proxyt https://docgraph auf
+      # genau diese Adresse (Hauskonvention: letztes Segment = Port, wie bei
+      # case-assist ::5777 und paperless ::8090). Ohne die Zuweisung vergibt
+      # Docker eine beliebige (zuletzt ::6), Caddy laeuft in 'i/o timeout'
+      # und liefert 502 — ueber den Port-Mount :5776 bleibt der Viewer dabei
+      # erreichbar, was die Fehlersuche verschleiert (2026-08-29).
+      web_net:
+        ipv6_address: fd00:24:9:68:23::5776
 
 # Gehoert dem paperless-ngx-Compose-Projekt (compose-files/paperless).
 networks:
