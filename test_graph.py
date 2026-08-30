@@ -3,7 +3,8 @@ Lauf: python test_graph.py"""
 
 import re
 
-from graphview import color_for, graph_html, graph_subset, index_html, node_dict
+from graphview import (color_for, graph_html, graph_subset, hilfe_html,
+                       index_html, node_dict)
 
 
 def test_graph_shell_fetches_live():
@@ -87,6 +88,36 @@ def test_index_html():
     assert "Noch keine Projekte" in index_html([])         # Leerzustand
 
 
+def test_backup_eigene_seite():
+    """Backup hat eine eigene Seite und steht im Menue — auf der Uebersicht
+    stehen keine Sicherungs-Knoepfe mehr, sonst waere es wieder an zwei Orten."""
+    from graphview import backup_html
+    cfg = {"enabled": True, "interval": "daily",
+           "projects": {"fehmarn": {"last_backup": "2026-08-30 14:25:00"}}}
+    archive = {"fehmarn": [{"name": "backup_2026-08-30_14-25-01.tar.gz",
+                            "size": 233_000_000},
+                           {"name": "backup_2026-08-29_22-20-00.tar.gz",
+                            "size": 200_000_000}],
+               "bö<se": []}
+    html = backup_html(cfg, archive)
+    assert 'value="daily" selected' in html
+    assert "2 Stände" in html and "2026-08-30 14:25" in html
+    assert "222.2 MB" in html
+    assert "noch kein Backup" in html                 # Projekt ohne Archiv
+    assert "bö&lt;se" in html                         # Name escaped
+    assert 'action="/backup/restore"' in html and 'action="/backup/now"' in html
+    assert 'action="/backup/config"' in html
+
+    # Menue-Eintrag auf allen Seiten, aktiv nur auf der Backup-Seite
+    assert 'href="/backup" class="on"' in html
+    for seite in (index_html([("fehmarn", True)]), hilfe_html()):
+        assert 'href="/backup"' in seite and 'href="/backup" class="on"' not in seite
+    # ... und die Uebersicht ist die Backup-Bedienung los
+    uebersicht = index_html([("fehmarn", True)])
+    assert "/backup/now" not in uebersicht and "/backup/restore" not in uebersicht
+    assert "Zeitplan" not in uebersicht
+
+
 def test_chat_kasten_ueberall_gleich():
     """Jeder Hinweis auf den KI-Chat traegt das Etikett und enthaelt genau
     EINEN Block — sonst ist wieder offen, was man selbst eingibt und was das
@@ -158,6 +189,8 @@ if __name__ == "__main__":
     test_graph_subset_focus_and_hide_and_search()
     test_color_deterministic()
     test_index_html()
+    test_backup_eigene_seite()
+    test_chat_kasten_ueberall_gleich()
     test_index_status()
     test_index_graph_counts()
     test_icon_buttons_icononly()

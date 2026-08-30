@@ -288,7 +288,38 @@ _WEITER_KASTEN = chat_kasten(
     "<code>graph_view</code> — er erscheint dann oben als Karte. Befragen "
     "lässt er sich danach mit <code>query</code>.")
 
-_NAV = (("/", "Projekte", "index"), ("/hilfe", "Hilfe", "hilfe"))
+# Schaltflaechen, Badges und Hinweise — geteilt zwischen Projektuebersicht und
+# Backup-Seite. CSS ohne doppelte Klammern, wird in die f-String-Templates
+# eingesetzt (Muster: _HEADER_CSS).
+_BTN_CSS = """
+  /* Icon-only-Schaltflächen: quadratisch, SVG zentriert. */
+  .del button.ib,.dec button.ib{position:relative;width:32px;height:30px;padding:0;
+    display:inline-flex;align-items:center;justify-content:center;overflow:visible}
+  .ib svg{display:block;pointer-events:none}
+  /* Tooltip: erscheint per CSS erst nach ~1,8 s Hover (transition-delay), nicht der native title. */
+  .ib::after{content:attr(data-tip);position:absolute;top:calc(100% + 7px);left:50%;
+    transform:translateX(-50%);background:#333;color:#fff;font-size:12px;font-weight:500;
+    line-height:1.1;white-space:nowrap;padding:5px 8px;border-radius:5px;
+    box-shadow:0 2px 8px rgba(0,0,0,.18);opacity:0;pointer-events:none;transition:opacity .12s ease;z-index:30}
+  .ib:hover::after{opacity:1;transition-delay:1.8s}
+  /* Icon-Buttons hovern grün (Aktion), nur Löschen bleibt rot (destruktiv). */
+  .del button.ib:hover{border-color:var(--accent);color:var(--accent);background:#e8edf7}
+  .del.danger button.ib:hover{border-color:#dd3333;color:#dd3333;background:#fff5f5}
+  .hint,.empty{color:var(--muted);font-size:13px}
+  .badge{font-size:13px;font-weight:600;padding:2px 9px;border-radius:20px;white-space:nowrap}
+  .badge.run{background:#fff8e1;color:#8a6d00;border:1px solid #ffe082}
+  .badge.done{background:#e8edf7;color:var(--ah);border:1px solid #c8e6c9}
+  .badge.err{background:#fff5f5;color:#c62828;border:1px solid #ffcdd2}
+  .del, .del button{background:none;border:1px solid var(--border);color:var(--muted);
+    border-radius:6px;padding:5px 11px;font-size:13px;cursor:pointer;white-space:nowrap;
+    transition:all .15s;margin:0;display:inline-block}
+  .del:hover, .del button:hover{border-color:#dd3333;color:#dd3333;background:#fff5f5}
+  .steps{background:var(--card);border:1px solid var(--border);border-radius:10px;
+    padding:18px 22px;font-size:14px;line-height:1.7}
+"""
+
+_NAV = (("/", "Projekte", "index"), ("/backup", "Backup", "backup"),
+        ("/hilfe", "Hilfe", "hilfe"))
 
 
 def _header(active: str) -> str:
@@ -334,24 +365,75 @@ def _card_backup(e: str, backups: list[dict]) -> str:
     return save + restore
 
 
-def _backup_section(cfg: dict, notice: str | None = None) -> str:
-    """Globale Backup-Karte: Zeitplan + Restore aus Datei. Die Archive selbst
-    werden je Projekt auf der Projekt-Karte verwaltet."""
+def backup_html(cfg: dict, project_backups: dict | None = None,
+                notice: str | None = None) -> str:
+    """Eigene Seite (/backup): Zeitplan, Restore aus Datei und die vorhandenen
+    Stände je Projekt. Stand früher als Abschnitt unter den Projekten und die
+    Sicherungs-Knöpfe auf jeder Projektkarte — auf der Übersicht ging es damit
+    um zwei Dinge gleichzeitig."""
+    project_backups = project_backups or {}
     interval = cfg.get("interval", "daily") if cfg.get("enabled") else "off"
-    labels = {"off": "aus", "hourly": "stündlich", "daily": "täglich", "weekly": "wöchentlich"}
+    labels = {"off": "aus", "hourly": "stündlich", "daily": "täglich",
+              "weekly": "wöchentlich"}
     opts = "".join(f'<option value="{k}"{" selected" if k == interval else ""}>{v}</option>'
                    for k, v in labels.items())
-    lasts = [pm.get("last_backup") for pm in cfg.get("projects", {}).values() if pm.get("last_backup")]
+    lasts = [pm.get("last_backup") for pm in cfg.get("projects", {}).values()
+             if pm.get("last_backup")]
     last = max(lasts) if lasts else None
     last_txt = f"Letztes Backup: {_esc(last[:16])}" if last else "Noch kein Backup gelaufen"
     cls, msg = _NOTICES.get(notice or "", ("", ""))
     banner = f'<div class="badge {cls}" style="margin-bottom:10px">{_esc(msg)}</div>' if msg else ""
-    return f"""<h2>Backup</h2>
+
+    if project_backups:
+        zeilen = "".join(
+            f"<tr><td><b>{_esc(p)}</b></td>"
+            f'<td class="hint">{_stand_text(b)}</td>'
+            f'<td style="text-align:right"><div class="actions">{_card_backup(_esc(p), b)}</div></td></tr>'
+            for p, b in sorted(project_backups.items()))
+        tabelle = (f"<table><tr><th>Projekt</th><th>Stände</th><th></th></tr>"
+                   f"{zeilen}</table>")
+    else:
+        tabelle = '<p class="hint">Noch keine Projekte.</p>'
+
+    return f"""<!doctype html>
+<html lang="de"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>doc-graph · Backup</title>
+{_FAVICON_LINK}
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{{--bg:#fafafa;--card:#fff;--border:#ececec;--accent:#3a5a9b;--ah:#2c4678;--text:#333;--muted:#666}}
+  *{{box-sizing:border-box;margin:0;padding:0}}
+  body{{background:var(--bg);color:var(--text);font-family:"Source Sans 3","Source Sans Pro",Arial,sans-serif;
+    letter-spacing:.15pt;font-size:15px;line-height:1.6;padding:32px;max-width:900px;margin:0 auto}}
+  h1{{font-size:22px;margin-bottom:4px}}
+  h2{{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;
+    color:var(--muted);margin:28px 0 12px}}
+  p.sub{{color:var(--muted);font-size:14px;margin-bottom:8px}}
+  a{{color:var(--accent)}}
+  code{{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;
+    background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:1px 5px}}
+  table{{width:100%;border-collapse:collapse;font-size:14px;background:var(--card);
+    border:1px solid var(--border);border-radius:10px;overflow:hidden}}
+  th,td{{text-align:left;padding:10px 14px;border-top:1px solid var(--border);vertical-align:middle}}
+  th{{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);border-top:none}}
+  .actions{{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}}
+{_HEADER_CSS}
+{_BTN_CSS}
+</style></head><body>
+{_header("backup")}
+<h1>Backup</h1>
+<p class="sub">Jedes Projekt wird einzeln gesichert — als <code>tar.gz</code> im
+Backup-Verzeichnis. Der Zeitplan nimmt nur Projekte mit, die sich seit dem
+letzten Lauf geändert haben.</p>
+
+<h2>Zeitplan</h2>
 <div class="steps">
   {banner}
   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
     <form method="post" action="/backup/config" style="display:flex;align-items:center;gap:6px;margin:0">
-      <label for="iv">Zeitplan:</label>
+      <label for="iv">Sichern:</label>
       <select id="iv" name="interval" style="font:inherit;padding:4px 8px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--text)">{opts}</select>
       <button class="del" type="submit" title="Zeitplan speichern">Speichern</button>
     </form>
@@ -361,17 +443,33 @@ def _backup_section(cfg: dict, notice: str | None = None) -> str:
     </label>
     <span class="hint">{last_txt}</span>
   </div>
-  <p class="hint" style="margin-top:8px">Zeitplan sichert jedes geänderte Projekt einzeln. Sichern/Wiederherstellen einzelner Stände direkt auf der Projekt-Karte.</p>
 </div>
+
+<h2>Stände je Projekt</h2>
+{tabelle}
+<p class="hint" style="margin-top:8px">Sichern legt nur an, wenn sich seit dem
+letzten Stand etwas geändert hat. Wiederherstellen ersetzt das Projekt durch
+den gewählten Stand — der jetzige geht dabei verloren.</p>
 <script>
 function restoreFromFile(inp){{
   var f = inp.files[0]; if(!f) return;
   if(!confirm('Projekt aus "'+f.name+'" wiederherstellen? Ein bestehendes Projekt gleichen Namens wird ERSETZT.')){{inp.value='';return;}}
   fetch('/backup/restore-upload', {{method:'POST', body:f}})
-    .then(function(r){{ location.href = r.ok ? '/?restore=ok' : '/?restore=err'; }})
-    .catch(function(){{ location.href = '/?restore=err'; }});
+    .then(function(r){{ location.href = r.ok ? '/backup?restore=ok' : '/backup?restore=err'; }})
+    .catch(function(){{ location.href = '/backup?restore=err'; }});
 }}
-</script>"""
+</script>
+</body></html>"""
+
+
+def _stand_text(backups: list[dict]) -> str:
+    """'3 Stände · neuester 2026-08-30 14:25 · 222.4 MB' bzw. der Leerfall."""
+    if not backups:
+        return "noch kein Backup"
+    neu = backups[0]
+    mb = neu["size"] / 1024 / 1024
+    zahl = "1 Stand" if len(backups) == 1 else f"{len(backups)} Stände"
+    return f"{zahl} · neuester {_esc(_backup_time(neu['name']))} · {mb:.1f} MB"
 
 
 def _flagged_section(p: str, flags: dict) -> str:
@@ -411,23 +509,20 @@ def _flagged_section(p: str, flags: dict) -> str:
             f'blendet dauerhaft aus.</div>{rows}</div>')
 
 
-def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: dict | None = None,
-               backup_cfg: dict | None = None, project_backups: dict | None = None,
-               notice: str | None = None, counts: dict | None = None,
+def index_html(items: list[tuple[str, bool]], status: dict | None = None,
+               meta: dict | None = None, counts: dict | None = None,
                flagged: dict | None = None, graph_counts: dict | None = None) -> str:
     """Landing-Page für den Viewer-Root. items = (projekt_id, hat_graph_html).
     status = {projekt_id: ingest_status_dict} — zeigt Import-Fortschritt pro Karte.
     meta = {projekt_id: {"project_name": "..."}} — Anzeigenamen.
     counts = {projekt_id: anzahl_indexierter_dokumente} — pro Karte angezeigt.
     graph_counts = {projekt_id: (anzahl_entities, anzahl_kanten)} — pro Karte angezeigt.
-    backup_cfg — Backup-Zeitplan. project_backups = {projekt_id: [{name,size}]} je Projekt.
     flagged = {projekt_id: {doc_key: info}} — übergroße Docs zur Nutzerentscheidung.
     Erklärt, was zu sehen ist und wie es weitergeht (statt rohem Dir-Listing)."""
     status = status or {}
     meta = meta or {}
     counts = counts or {}
     graph_counts = graph_counts or {}
-    project_backups = project_backups or {}
     flagged = flagged or {}
     # Auto-Refresh auch bei 'paused', damit Fortsetzen/Fortschritt sichtbar wird.
     running = any(s.get("state") in ("running", "paused") for s in status.values())
@@ -488,10 +583,9 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
             control_forms = _ctl_form(e, "resume", "Fortsetzen") + _ctl_form(e, "stop", "Stop")
         else:
             control_forms = ""
-        backup_forms = _card_backup(e, project_backups.get(p, []))
         # Pause/Stop wandern zur Fortschrittszeile (thematisch bei der Ingest-Anzeige),
         # nicht zwischen die Verwaltungsbuttons oben.
-        forms = refresh_form + rename_form + backup_forms + delete_form
+        forms = refresh_form + rename_form + delete_form
         cls = "card" if has else "card todo"
         progress = _progress_row(st, control_forms) if live else ""
         flags = _flagged_section(p, flagged.get(p, {}))
@@ -532,19 +626,7 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
     border-top:1px solid var(--border)}}
   .prog .bar{{width:100%;height:7px;background:var(--bg);border:1px solid var(--border);
     border-radius:20px;overflow:hidden}}
-  /* Icon-only-Schaltflächen: quadratisch, SVG zentriert. */
-  .del button.ib,.dec button.ib{{position:relative;width:32px;height:30px;padding:0;
-    display:inline-flex;align-items:center;justify-content:center;overflow:visible}}
-  .ib svg{{display:block;pointer-events:none}}
-  /* Tooltip: erscheint per CSS erst nach ~1,8 s Hover (transition-delay), nicht der native title. */
-  .ib::after{{content:attr(data-tip);position:absolute;top:calc(100% + 7px);left:50%;
-    transform:translateX(-50%);background:#333;color:#fff;font-size:12px;font-weight:500;
-    line-height:1.1;white-space:nowrap;padding:5px 8px;border-radius:5px;
-    box-shadow:0 2px 8px rgba(0,0,0,.18);opacity:0;pointer-events:none;transition:opacity .12s ease;z-index:30}}
-  .ib:hover::after{{opacity:1;transition-delay:1.8s}}
-  /* Icon-Buttons hovern grün (Aktion), nur Löschen bleibt rot (destruktiv). */
-  .del button.ib:hover{{border-color:var(--accent);color:var(--accent);background:#e8edf7}}
-  .del.danger button.ib:hover{{border-color:#dd3333;color:#dd3333;background:#fff5f5}}
+{_BTN_CSS}
   .prog .fill{{height:100%;background:var(--accent);border-radius:20px;transition:width .4s ease}}
   .prog .fill.paused{{background:#ffb300}}
   .prog-ctl{{display:flex;gap:6px;flex-shrink:0}}
@@ -552,16 +634,7 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
   .nm{{font-weight:600;font-size:16px;color:var(--text);text-decoration:none}}
   a.nm.open:hover .go{{text-decoration:underline}}
   .go{{color:var(--accent);font-size:14px;font-weight:600;white-space:nowrap}}
-  .hint,.empty{{color:var(--muted);font-size:13px}}
-  .badge{{font-size:13px;font-weight:600;padding:2px 9px;border-radius:20px;white-space:nowrap}}
-  .badge.run{{background:#fff8e1;color:#8a6d00;border:1px solid #ffe082}}
-  .badge.done{{background:#e8edf7;color:var(--ah);border:1px solid #c8e6c9}}
-  .badge.err{{background:#fff5f5;color:#c62828;border:1px solid #ffcdd2}}
-  .del, .del button{{background:none;border:1px solid var(--border);color:var(--muted);
-    border-radius:6px;padding:5px 11px;font-size:13px;cursor:pointer;white-space:nowrap;transition:all .15s;margin:0;display:inline-block}}
-  .del:hover, .del button:hover{{border-color:#dd3333;color:#dd3333;background:#fff5f5}}
   code{{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:1px 5px}}
-  .steps{{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px 22px;font-size:14px;line-height:1.7}}
   .steps ol{{margin:8px 0 0 18px}}
   .bk{{list-style:none;margin:0;font-size:13px;color:var(--muted)}}
   .bkrow{{display:flex;align-items:center;gap:10px;padding:6px 0;border-top:1px solid var(--border)}}
@@ -588,7 +661,6 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
 <div class="grid">
 {rows}
 </div>
-{_backup_section(backup_cfg or {}, notice)}
 <h2>Wie es weitergeht</h2>
 <div class="steps">
   Neue Dokumente in den Graphen bringen — dafür genügt ein Satz:
