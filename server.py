@@ -35,7 +35,8 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 
 from graphview import (
-    edge_dict, graph_html, graph_subset, hilfe_html, index_html, node_dict,
+    backup_html, edge_dict, graph_html, graph_subset, hilfe_html,
+    index_html, node_dict,
 )
 
 import numpy as np
@@ -1629,12 +1630,6 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
     def do_GET(self):  # noqa: N802 (stdlib-Signatur)
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path in ("/", "/index.html"):
-            q = urllib.parse.parse_qs(parsed.query)
-            notice = None
-            if q.get("backup"):
-                notice = f"backup:{q['backup'][0]}"
-            elif q.get("restore"):
-                notice = f"restore:{q['restore'][0]}"
             rendered = {
                 p.name: (p / "graph.html").exists()
                 for p in PROJECTS_DIR.iterdir()
@@ -1649,11 +1644,6 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             for proj_id in rendered.keys():
                 if (PROJECTS_DIR / proj_id / "meta.json").exists():
                     meta[proj_id] = _load_meta(proj_id)
-            # Backup-Archive je Projekt (neueste zuerst) für die Restore-Auswahl.
-            project_backups = {
-                p: [{"name": f.name, "size": f.stat().st_size} for f in backup.list_project_backups(p)]
-                for p in rendered
-            }
             # Anzahl indexierter Dokumente je Projekt aus dem Ingest-Manifest.
             counts = {p: len(_load_manifest(p)) for p in rendered}
             # Entitäten/Kanten je gerendertem Projekt (aus dem gecachten Graphen).
@@ -1669,8 +1659,7 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
                 if s.get("state") in ("running", "paused"):
                     sc["docs"] = _doc_status_counts(name)
                 status_view[name] = sc
-            body = index_html(items, status_view, meta, backup.load_cfg(),
-                              project_backups, notice, counts, flagged,
+            body = index_html(items, status_view, meta, counts, flagged,
                               graph_counts).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -1686,6 +1675,17 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/hilfe":
             self._html(hilfe_html())
+            return
+        if parsed.path == "/backup":
+            q = urllib.parse.parse_qs(parsed.query)
+            notice = (f"backup:{q['backup'][0]}" if q.get("backup") else
+                      f"restore:{q['restore'][0]}" if q.get("restore") else None)
+            projects = sorted(p.name for p in PROJECTS_DIR.iterdir() if p.is_dir())
+            self._html(backup_html(
+                backup.load_cfg(),
+                {p: [{"name": f.name, "size": f.stat().st_size}
+                     for f in backup.list_project_backups(p)] for p in projects},
+                notice))
             return
         # Volltext-Export. Bewusst hier und nicht als MCP-Tool: eine Akte hat
         # Megabytes und sprengt jedes Token-Limit.
@@ -1799,7 +1799,7 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
             pm = backup.load_cfg().get("projects", {}).get(project_id, {})
             if pm.get("signature") == backup.project_signature(project_id):
                 self.send_response(303)
-                self.send_header("Location", "/?backup=nochange")
+                self.send_header("Location", "/backup?backup=nochange")
                 self.end_headers()
                 return
             try:
@@ -1809,7 +1809,7 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
                 self.send_error(500, "Backup fehlgeschlagen — siehe Server-Log")
                 return
             self.send_response(303)
-            self.send_header("Location", "/?backup=ok")
+            self.send_header("Location", "/backup?backup=ok")
             self.end_headers()
             return
         if self.path == "/backup/restore-upload":
@@ -1834,7 +1834,7 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
                 return
             tmp.unlink(missing_ok=True)
             self.send_response(303)
-            self.send_header("Location", "/?restore=ok")
+            self.send_header("Location", "/backup?restore=ok")
             self.end_headers()
             return
         if self.path == "/backup/config":
@@ -1876,7 +1876,7 @@ class _ViewerHandler(SimpleHTTPRequestHandler):
                 self.send_error(500, "Restore fehlgeschlagen — siehe Server-Log")
                 return
             self.send_response(303)
-            self.send_header("Location", "/?restore=ok")
+            self.send_header("Location", "/backup?restore=ok")
             self.end_headers()
             return
         if self.path == "/ingest/control":

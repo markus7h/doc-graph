@@ -26,7 +26,7 @@ doc-graph
 |---|---|
 | `config.py` | Pfade, Logger, Projektnamen-Validierung. Bewusst ohne schwere Importe, damit Module und ihre Tests ohne LightRAG/MCP laufen. |
 | `backup.py` | Backup/Restore je Projekt samt Scheduler. Kennt `server.py` nicht; die beiden Rückfragen an den laufenden Dienst (läuft ein Ingest? Instanz-Cache verwerfen) hängt `server.py` beim Start ein. |
-| `graphview.py` | HTML-Rendering des Graph-Viewers. |
+| `graphview.py` | HTML-Rendering des Viewers: Projektübersicht, `/backup`, `/hilfe`. |
 | `clauses.py` | Klausel-Splitting für Regelwerke. |
 | `backfill_fundstellen.py` | Einmal-Migration: trägt Fundstellen in Projekte nach, die vor dem `file_paths`-Fix ingestiert wurden. |
 | `server.py` | Rest: MCP-Tools, Ingest-Pipeline, LightRAG-Setup, Embedding-Client, HTTP-Viewer. Weiterhin zu groß — siehe Verbesserungsplan. |
@@ -243,8 +243,10 @@ Tooltip erst nach kurzem Verweilen mit der Maus, Löschen hovert rot, der Rest i
 - **Löschen:** Entfernt den Projekt-Index nach Browser-Bestätigung (Quelldokumente
   bleiben) — serverseitig derselbe Weg wie das MCP-Tool `delete_project`.
 
-Darunter liegt die **Backup**-Karte (siehe unten): Zeitplan-Dropdown, „Jetzt sichern"
-und die letzten Archive.
+Backup hat eine **eigene Seite** unter `/backup` (im Menü neben *Projekte* und
+*Hilfe*) — siehe unten. Auf der Projektübersicht steht davon nichts mehr: dort
+ging es sonst um zwei Dinge gleichzeitig, und jede Karte trug zwei zusätzliche
+Schaltflächen.
 
 Der Viewer ist ein stdlib-Fileserver (LAN-intern, kein Auth/HTTPS).
 
@@ -315,9 +317,9 @@ Ablage: `<Backup-Ordner>/<project_id>/backup_<YYYY-MM-DD_HH-MM-SS>.tar.gz`.
 Die Archiv-Wurzel ist die `project_id`, damit eine einzelne Datei für sich allein
 wiederherstellbar ist (auch in ein noch nicht existierendes Projekt).
 
-Bedienung komplett über die Viewer-Landing-Page (`http://mystorage:5776/`):
+Bedienung komplett über die Backup-Seite (`http://mystorage:5776/backup`):
 
-Global (Backup-Karte):
+Zeitplan:
 - **Zeitplan:** `aus` / `stündlich` / `täglich` / `wöchentlich`, „Speichern" übernimmt.
   Der Scheduler sichert **jedes geänderte Projekt einzeln**. Die Einstellung liegt in
   `<Backup-Ordner>/.config.json` und überlebt Neustarts.
@@ -326,7 +328,8 @@ Global (Backup-Karte):
   wird hochgeladen, auf gültiges Format geprüft und zurückgespielt — **legt das Projekt
   neu an, falls es noch nicht existiert**.
 
-Je Projekt-Karte:
+Stände je Projekt (Tabelle, eine Zeile pro Projekt mit Anzahl, neuestem
+Zeitpunkt und Größe):
 - **Sichern:** Sichert dieses Projekt sofort — **nur wenn es sich seit dem letzten
   Backup geändert hat** (sonst kurze Rückmeldung „nichts geändert").
 - **Wiederherstellen:** Auswahl der **letzten 5** Stände (Zeitpunkt · Größe) + Button —
