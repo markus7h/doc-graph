@@ -252,6 +252,42 @@ _HEADER_CSS = """
   .brand nav a.on{color:var(--accent);font-weight:600}
 """
 
+# Kasten fuer alles, was in den KI-Chat gehoert. Ohne das Etikett sieht er aus
+# wie jeder andere Codeblock; pre-wrap, weil dort auch ganze Saetze stehen.
+_CHAT_CSS = """
+  .chat{position:relative;margin:8px 0 0}
+  .chat pre{margin:0;padding-top:22px;white-space:pre-wrap}
+  .chat-label{position:absolute;top:5px;right:9px;font-size:10.5px;font-weight:600;
+    letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
+  .chat + p{margin-top:6px}
+"""
+
+
+def chat_kasten(eingabe: str, hinweis: str = "") -> str:
+    """Einheitliche Form für jeden Hinweis auf den KI-Chat, überall gleich:
+
+    Im Kasten steht NUR, was der Mensch selbst eingibt — mit dem Etikett
+    „KI Chat", damit erkennbar ist, wo das hingehört. Was Claude daraufhin von
+    sich aus tut, steht als Prosa darunter; beides gleichrangig als Code zu
+    zeigen las sich wie eine Aufforderung, die Aufrufe nacheinander selbst
+    einzutippen. Gleiche Funktion in case-assist (viewer.chat_kasten).
+
+    `eingabe` wird escaped, `hinweis` ist HTML (er trägt <code>-Auszeichnung).
+    """
+    kasten = (f'<div class="chat"><span class="chat-label">KI Chat</span>'
+              f"<pre>{_esc(eingabe)}</pre></div>")
+    return kasten + (f"<p>{hinweis}</p>" if hinweis else "")
+
+
+_WEITER_KASTEN = chat_kasten(
+    "Nimm die Dokumente mit dem Paperless-Tag future-fund ins Projekt "
+    "future-fund auf und zeig mir danach den Graphen.",
+    "Claude indexiert mit <code>ingest_paperless</code> (bzw. "
+    "<code>ingest_directory</code> für einen Ordner), verfolgt den Lauf mit "
+    "<code>ingest_status</code> und rendert den Graphen mit "
+    "<code>graph_view</code> — er erscheint dann oben als Karte. Befragen "
+    "lässt er sich danach mit <code>query</code>.")
+
 _NAV = (("/", "Projekte", "index"), ("/hilfe", "Hilfe", "hilfe"))
 
 
@@ -544,6 +580,7 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
     transition:all .15s;margin:0;display:inline-block}}
   .dec:hover, .dec button:hover{{border-color:#888;color:var(--text);background:var(--bg)}}
   .dec.ok:hover, .dec.ok button:hover{{border-color:var(--accent);color:var(--accent);background:#e8edf7}}
+{_CHAT_CSS}
 </style></head><body>
 {_header("index")}
 <p class="sub">Knowledge Graphs aus deinen Dokumenten — pro Projekt ein Graph. Klick ein Projekt an, um den interaktiven Graphen zu öffnen.</p>
@@ -554,46 +591,44 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
 {_backup_section(backup_cfg or {}, notice)}
 <h2>Wie es weitergeht</h2>
 <div class="steps">
-  Neue Dokumente in den Graphen bringen — im Claude-Code-Prompt:
-  <ol>
-    <li><code>ingest_paperless(project="x", tag="…")</code> bzw. <code>ingest_directory(project="x", subpath="…")</code> — indexieren</li>
-    <li><code>graph_view(project="x")</code> — Graph rendern, erscheint dann oben als Karte</li>
-    <li><code>query(project="x", question="…")</code> — den Graphen befragen</li>
-  </ol>
+  Neue Dokumente in den Graphen bringen — dafür genügt ein Satz:
+  {_WEITER_KASTEN}
 </div>
 </body></html>"""
 
 
-# Was im Chat gesagt wird, was daraufhin laeuft, und was es erspart. Der
-# Einstieg der Hilfe: die Werkzeuge darunter beantworten "und wie ruft man das
-# direkt auf?", nicht umgekehrt.
+# Was man in den Chat schreibt, was daraufhin laeuft, und was es erspart. Im
+# Kasten steht der Satz — die Aufrufe stehen als Prosa daneben, weil man sie
+# nicht selbst tippt (dieselbe Trennung wie in chat_kasten). Die Werkzeuge
+# darunter beantworten "und wie ruft man das direkt auf?", nicht umgekehrt.
 _HILFE_CHAT = [
     ("Was sagen die Bedingungen zur Befristung eines Anerkenntnisses?",
-     'get_clause("bu-avb", "§ 5")',
+     'ruft <code>get_clause("bu-avb", "§ 5")</code> auf',
      "Der Wortlaut der Klausel, mit Dokumenttitel darüber. Passt die Nummer "
      "nicht, kommt die Liste aller Klauseln zurück und ich frage nach.",
      "Kein Blättern im Bedingungswerk, und der Text ist der echte — nicht "
      "das, was ein Modell dazu erinnert."),
     ("Was liegt zu der Sache überhaupt vor?",
-     'list_projects()\n'
-     'query("future-fund", "Welche Schreiben liegen vor?", only_context=True)',
+     "sieht mit <code>list_projects()</code> nach und sucht dann mit "
+     "<code>query(…, only_context=True)</code>",
      "Die Projekte mit Dokumentzahl, dann die Fundstellen zur Frage — roh, "
      "gelesen wird von mir im Chat.",
      "Ein Überblick über hunderte Dokumente, ohne eines davon zu öffnen."),
     ("Was weißt du über die ERGO Pensionskasse in dem Bestand?",
-     'get_entity("future-fund", "ERGO Pensionskasse AG", top_k=15)',
+     'ruft <code>get_entity("future-fund", "ERGO Pensionskasse AG")</code> auf',
      "Die Entität mit ihren Nachbarn: welche Dokumente, welche Beziehungen, "
      "welche Vorgänge daran hängen.",
      "Zeigt Zusammenhänge, nach denen man nicht gesucht hätte — der Graph "
      "kennt sie schon."),
-    ("Neue Post ist in Paperless, Tag <i>future-fund</i>.",
-     'ingest_paperless("future-fund", tag="future-fund")\n'
-     'ingest_status("future-fund")',
+    ("Neue Post ist in Paperless, Tag future-fund.",
+     "startet <code>ingest_paperless</code> und verfolgt den Lauf mit "
+     "<code>ingest_status</code>",
      "Nur das Neue wird indexiert, erkannt am Inhalts-Hash. Der Lauf arbeitet "
      "im Hintergrund, der Status zeigt den echten Fortschritt.",
      "Kein Neuaufbau, kein manuelles Nachhalten, was schon drin war."),
     ("Leg mir daraus einen Fall an.",
-     'new_case_from_docgraph("future-fund", gebiet="berufsunfaehigkeit")',
+     'ruft <code>new_case_from_docgraph("future-fund", '
+     'gebiet="berufsunfaehigkeit")</code> bei case-assist auf',
      "case-assist holt die Dokumente hier im Volltext ab und baut daraus "
      "einen Fall: Fakten, Regelungen, Auffächerung gegen das Regelwerk.",
      "Dieselbe Textbasis in beiden Systemen, keine zweite Paperless-Runde — "
@@ -669,13 +704,13 @@ def hilfe_html() -> str:
     der Loop, in dem es mit case-assist zusammenspielt. Dieselbe Seite liegt
     unter case-assist.lan/hilfe; die volle Referenz steht in luecken-loop.md."""
     chat = "".join(
-        f'<div class="hcard"><b>Du:</b> \u201e{frage}\u201c'
-        f"<pre>{_esc(kette)}</pre>"
-        f"<p><b>Zurück kommt:</b> {ergebnis}<br>"
+        '<div class="hcard">' + chat_kasten(frage)
+        + f"<p><b>Claude:</b> {laeuft}<br>"
+        f"<b>Zurück kommt:</b> {ergebnis}<br>"
         f"<b>Erspart:</b> {spart}</p></div>"
-        for frage, kette, ergebnis, spart in _HILFE_CHAT)
+        for frage, laeuft, ergebnis, spart in _HILFE_CHAT)
     karten = "".join(
-        f'<div class="hcard"><b>{t}</b><pre>{_esc(a)}</pre><p>{x}</p></div>'
+        f'<div class="hcard"><b>{t}</b>' + chat_kasten(a) + f"<p>{x}</p></div>"
         for t, a, x in _HILFE_WERKZEUGE)
     zeilen = "".join(
         f"<tr><td>{i}</td><td>{wer}</td><td><code>{_esc(aufruf)}</code></td>"
@@ -710,6 +745,7 @@ def hilfe_html() -> str:
   th,td{{text-align:left;padding:8px 12px;border-top:1px solid var(--border);vertical-align:top}}
   th{{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);border-top:none}}
   td code{{white-space:nowrap}}
+{_CHAT_CSS}
 </style></head><body>
 {_header("hilfe")}
 <h1>Hilfe</h1>
@@ -718,15 +754,15 @@ Tatsache steht. <b>case-assist</b> weiß deterministisch, <i>welche</i> Tatsache
 einem Fall noch fehlt. Die Wertung trifft in beiden Fällen der Mensch.</p>
 
 <h2>So läuft das im Gespräch</h2>
-<p class="sub">Der normale Weg ist der Chat in Claude Code — du sagst, was du
-wissen willst, Claude ruft die Werkzeuge auf. Die Aufrufe stehen hier nur mit
-dabei, damit nachvollziehbar bleibt, was passiert ist.</p>
+<p class="sub">Der normale Weg ist der Chat in Claude Code: im Kasten steht,
+was du schreibst — mehr nicht. Was daraufhin läuft, steht darunter, damit
+nachvollziehbar bleibt, was passiert ist.</p>
 {chat}
 
 <h2>Was doc-graph für ein Projekt kann</h2>
-<p class="sub">Die Aufrufe gehen in Claude Code an den doc-graph-Server.
-<code>bu-avb</code> ist hier ein Bedingungswerk, <code>future-fund</code> eine
-Akte.</p>
+<p class="sub">Diese Aufrufe tippst du selbst, wenn du genau ein Ergebnis
+willst — im Gespräch reicht sonst der Satz oben. <code>bu-avb</code> ist hier
+ein Bedingungswerk, <code>future-fund</code> eine Akte.</p>
 {karten}
 
 <h2>Eine Lücke in einem Fall schließen</h2>

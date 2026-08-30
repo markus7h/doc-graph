@@ -87,6 +87,23 @@ def test_index_html():
     assert "Noch keine Projekte" in index_html([])         # Leerzustand
 
 
+def test_chat_kasten_ueberall_gleich():
+    """Jeder Hinweis auf den KI-Chat traegt das Etikett und enthaelt genau
+    EINEN Block — sonst ist wieder offen, was man selbst eingibt und was das
+    Modell von sich aus tut."""
+    from graphview import chat_kasten, hilfe_html
+    kasten = chat_kasten('get_clause("bu-avb", "§ 2")',
+                         "Claude ruft das auf.")
+    assert "KI Chat" in kasten and kasten.count("<pre>") == 1
+    assert "&quot;" in kasten, "Eingabe muss escaped sein"
+
+    for seite in (hilfe_html(), index_html([("fehmarn", True)])):
+        assert seite.count('<div class="chat">') == seite.count("KI Chat") > 0
+        assert ".chat-label" in seite, "CSS fehlt auf dieser Seite"
+        for k in seite.split('<div class="chat">')[1:]:
+            assert k.split("</div>")[0].count("<pre>") == 1
+
+
 def test_index_status():
     # Import-Status: laufender Ingest -> Badge (Fortschritt done/total) + Auto-Refresh
     st = {"fehmarn": {"state": "running", "done": 7, "total": 28, "at": "2026-07-12 07:00:00"}}
