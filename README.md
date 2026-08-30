@@ -263,7 +263,16 @@ Caddy dialt weiter auf die alte und liefert 502 — der Viewer bleibt dabei übe
 
 `http://<host>:5776/hilfe` (Link auf der Projektübersicht) — beginnt mit
 **Chat-Beispielen**: was man in Claude Code sagt, was daraufhin läuft und was
-es erspart. Darunter, was doc-graph für ein Projekt kann, mit aufrufbaren
+es erspart.
+
+Jeder Hinweis auf den KI-Chat hat dieselbe Form: `graphview.chat_kasten(eingabe,
+hinweis)` rendert einen Kasten mit dem Etikett **KI Chat**, darin ausschließlich
+das, was der Mensch selbst schreibt (ein Tool-Aufruf oder schlicht ein Satz),
+und darunter als Prosa, was Claude daraufhin von sich aus tut. Ohne das Etikett
+sieht ein solcher Kasten aus wie jeder andere Codeblock der Seite; ohne die
+Trennung liest sich Claudes Arbeit wie eine Eingabeliste. Die Box *Wie es
+weitergeht* auf der Projektübersicht nutzt denselben Kasten — gleiche Form wie
+in case-assist (`viewer.chat_kasten`). Darunter, was doc-graph für ein Projekt kann, mit aufrufbaren
 Beispielen: `get_clause`, `query`,
 `get_entity`, `ingest_paperless`/`ingest_status`, `delete_documents` und der
 Volltext-Export. Dazu der Lücken-Loop mit case-assist als Acht-Zeilen-Tabelle
