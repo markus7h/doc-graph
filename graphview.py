@@ -239,6 +239,31 @@ _FAVICON = (
 
 _FAVICON_LINK = f'<link rel="icon" type="image/svg+xml" href="{_FAVICON}">'
 
+# Kopfzeile: Logo + Wortmarke links, Navigation rechts (eine Zeile, wie ueblich).
+# CSS ohne doppelte Klammern -- wird in die f-String-Templates eingesetzt, nicht geparst.
+_HEADER_CSS = """
+  .brand{display:flex;align-items:center;gap:12px;margin:0 0 20px;padding-bottom:12px;
+    border-bottom:1px solid var(--border);flex-wrap:wrap}
+  .brand h1,.brand .wm{margin:0;font-size:22px;font-weight:700;color:var(--text);text-decoration:none}
+  .logo{flex:none;display:block}
+  .brand nav{margin-left:auto;display:flex;gap:18px;font-size:14px}
+  .brand nav a{color:var(--muted);text-decoration:none}
+  .brand nav a:hover{color:var(--accent)}
+  .brand nav a.on{color:var(--accent);font-weight:600}
+"""
+
+_NAV = (("/", "Projekte", "index"), ("/hilfe", "Hilfe", "hilfe"))
+
+
+def _header(active: str) -> str:
+    """Kopfzeile fuer 'index' bzw. 'hilfe'; die aktive Seite ist im Nav markiert."""
+    nav = "".join(
+        f'<a href="{href}"{" class=\"on\"" if key == active else ""}>{text}</a>'
+        for href, text, key in _NAV
+    )
+    wm = "<h1>doc-graph</h1>" if active == "index" else '<a class="wm" href="/">doc-graph</a>'
+    return f'<header class="brand"><a href="/">{_LOGO}</a>{wm}<nav>{nav}</nav></header>'
+
 
 def _backup_time(name: str) -> str:
     """'backup_2026-07-16_14-30-05.tar.gz' -> '2026-07-16 14:30' (Fallback: Name)."""
@@ -458,9 +483,7 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
   h1{{font-size:22px;font-weight:700;margin-bottom:4px}}
   .sub{{color:var(--muted);font-size:14px;margin-bottom:24px}}
   h2{{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 12px}}
-  .brand{{display:flex;align-items:center;gap:12px;margin-bottom:4px}}
-  .brand h1{{margin:0}}
-  .logo{{flex:none}}
+{_HEADER_CSS}
   .grid{{display:grid;gap:10px;margin-bottom:28px}}
   .card{{display:flex;flex-direction:column;
     background:var(--card);border:1px solid var(--border);border-left:3px solid var(--accent);
@@ -522,8 +545,8 @@ def index_html(items: list[tuple[str, bool]], status: dict | None = None, meta: 
   .dec:hover, .dec button:hover{{border-color:#888;color:var(--text);background:var(--bg)}}
   .dec.ok:hover, .dec.ok button:hover{{border-color:var(--accent);color:var(--accent);background:#e8edf7}}
 </style></head><body>
-<div class="brand">{_LOGO}<h1>doc-graph</h1></div>
-<p class="sub">Knowledge Graphs aus deinen Dokumenten — pro Projekt ein Graph. Klick ein Projekt an, um den interaktiven Graphen zu öffnen. <a href="/hilfe">Hilfe</a></p>
+{_header("index")}
+<p class="sub">Knowledge Graphs aus deinen Dokumenten — pro Projekt ein Graph. Klick ein Projekt an, um den interaktiven Graphen zu öffnen.</p>
 <h2>Projekte</h2>
 <div class="grid">
 {rows}
@@ -675,6 +698,7 @@ def hilfe_html() -> str:
     color:var(--muted);margin:28px 0 12px}}
   p.sub{{color:var(--muted);font-size:14px;margin-bottom:8px}}
   a{{color:var(--accent)}}
+{_HEADER_CSS}
   .hcard{{background:var(--card);border:1px solid var(--border);
     border-left:3px solid var(--accent);border-radius:10px;padding:14px 18px;margin-bottom:10px}}
   .hcard p{{color:var(--muted);font-size:14px;margin-top:8px}}
@@ -687,7 +711,7 @@ def hilfe_html() -> str:
   th{{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);border-top:none}}
   td code{{white-space:nowrap}}
 </style></head><body>
-<p class="sub"><a href="/">← Übersicht</a></p>
+{_header("hilfe")}
 <h1>Hilfe</h1>
 <p class="sub">Zwei Systeme, klare Rollen: <b>doc-graph</b> weiß, <i>wo</i> eine
 Tatsache steht. <b>case-assist</b> weiß deterministisch, <i>welche</i> Tatsache

@@ -720,7 +720,7 @@ def _doc_to_text(doc: dict, correspondent_name: str | None,
     return "\n".join(header) + "\n\n" + (doc.get("content") or "")
 
 
-def _fundstelle(text: str) -> str:
+def _fundstelle(text: str, doc_key: str = "") -> str:
     """Zitierfaehige Quellenangabe fuer LightRAGs Reference Document List.
 
     LightRAG baut die Liste aus dem file_path der Chunks und ueberspringt dabei
@@ -731,6 +731,15 @@ def _fundstelle(text: str) -> str:
     Metadaten-Header, den _doc_to_text bzw. _file_to_text an den Anfang setzen.
     Also genau den zurueckgelesen, statt die Metadaten ein zweites Mal durch die
     Aufrufkette (_run_ingest kennt nur key/text/hash) zu schleifen.
+
+    Der doc_key gehoert mit hinein, weil LightRAG den file_path als Dateinamen
+    behandelt und Dokumente mit gleichem file_path als Duplikat VERWIRFT
+    ("Duplicate document detected (filename)" -> "No new unique documents were
+    found"). Titel+Datum+Korrespondent sind nicht eindeutig: im Bestand
+    future-fund teilten sich 300 Dokumente nur 294 Fundstellen, und die 30
+    Kollisionen fielen bei jedem Ingest stillschweigend heraus. Zitierbar
+    bleibt der Text davor; der Schluessel in Klammern macht ihn zusaetzlich
+    nachpruefbar.
 
     ponytail: Zeichenkette statt Dict — LightRAG will hier einen Pfad-String,
     und was der Nutzer zitieren soll, steht damit an genau einer Stelle.
@@ -744,7 +753,8 @@ def _fundstelle(text: str) -> str:
     for feld in ("Datum", "Korrespondent"):
         if kopf.get(feld):
             teile.append(kopf[feld])
-    return ", ".join(teile)
+    aus = ", ".join(teile)
+    return f"{aus} ({doc_key})" if doc_key else aus
 
 
 def _titel(text: str) -> str:
@@ -1002,7 +1012,8 @@ async def _run_ingest(project_id: str, rag, pending: list, counts: dict, manifes
                 # der Reference Document List — die Antwort waere unbelegbar.
                 ins = asyncio.create_task(
                     rag.ainsert(texts, ids=keys,
-                                file_paths=[_fundstelle(t) for t in texts]))
+                                file_paths=[_fundstelle(t, k)
+                                            for t, k in zip(texts, keys)]))
                 while True:
                     finished, _ = await asyncio.wait({ins}, timeout=0.3)
                     if ins in finished:
