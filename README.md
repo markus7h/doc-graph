@@ -40,10 +40,20 @@ Aussage auf ein Dokument zurückführen lässt. LightRAG baut sie aus dem
 `ainsert` kein `file_paths` übergeben, bleibt die Liste deshalb **leer** und
 jede `reference_id` ist `""` — die Antwort ist dann nicht belegbar.
 
-doc-graph übergibt als Fundstelle `Titel, Datum, Korrespondent`, gelesen aus dem
-Metadaten-Header, den `_doc_to_text` (Paperless) und `_file_to_text` (Datei)
-ohnehin an den Textanfang setzen. Fehlt der Header, steht dort `ohne Titel` —
-bewusst, statt einen plausiblen Beleg zu erfinden.
+doc-graph übergibt als Fundstelle `Titel, Datum, Korrespondent (doc_key)`,
+gelesen aus dem Metadaten-Header, den `_doc_to_text` (Paperless) und
+`_file_to_text` (Datei) ohnehin an den Textanfang setzen. Fehlt der Header,
+steht dort `ohne Titel` — bewusst, statt einen plausiblen Beleg zu erfinden.
+
+**Der `doc_key` in Klammern ist Pflicht, nicht Zierde.** LightRAG behandelt den
+`file_path` als Dateinamen und verwirft Dokumente mit gleichem Pfad still
+(`Duplicate document detected (filename)` → `No new unique documents were
+found`). Titel, Datum und Korrespondent sind dafür nicht eindeutig genug: im
+Projekt `future-fund` teilten sich 300 Dokumente nur 294 Fundstellen, und
+30 weitere fielen bei **jedem** Ingest heraus, ohne dass der Zähler es zeigte —
+`ingest_status` meldete `state: done`, im Log stand `No documents to process`.
+Der Schlüssel macht die Angabe zugleich nachprüfbar: `paperless:1141` ist eine
+auflösbare Referenz, ein Titel ist es nicht.
 
 Projekte, die vor diesem Fix ingestiert wurden, tragen überall
 `unknown_source`. Das repariert `backfill_fundstellen.py` **ohne Neu-Ingest**,

@@ -85,6 +85,20 @@ pruefe("Datei-Header ohne Korrespondent",
 # Beleg — und faellt im Backfill-Bericht als Zaehler auf.
 pruefe("ohne Header", server._fundstelle("Einfach nur Text ohne alles"), "ohne Titel")
 
+# LightRAG behandelt den file_path als Dateinamen und verwirft Dokumente mit
+# gleichem Pfad ("Duplicate document detected"). Titel+Datum+Korrespondent sind
+# nicht eindeutig — im Bestand future-fund fielen 30 Dokumente still heraus.
+pruefe("doc_key macht die Fundstelle eindeutig",
+       server._fundstelle(PAPERLESS, "paperless:4711"),
+       "2026_05_28_Stellungnahme_an_Ergo, 2026-05-28, "
+       "ERGO Lebensversicherung AG (paperless:4711)")
+DOPPELT = "Dokument: Selbstauskunft\nDatum: 2024\n\nInhalt A"
+pruefe("gleicher Header, verschiedene Schluessel -> verschiedene Pfade",
+       server._fundstelle(DOPPELT, "paperless:1") != server._fundstelle(DOPPELT, "paperless:2"),
+       True)
+pruefe("ohne Schluessel unveraendert (Backfill-Pfad)",
+       server._fundstelle(DOPPELT), "Selbstauskunft, 2024")
+
 # 'Schlagworte: dx: Microsoft' enthaelt einen zweiten Doppelpunkt — partition
 # darf nur am ersten trennen, sonst zerfaellt der Header.
 pruefe("Doppelpunkt im Wert",
