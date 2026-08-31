@@ -92,11 +92,25 @@ Augenhöhe bis besser als mistral bei deutschen Antworten).
 
 Hinter dem Router liegen **zwei** GPU-Hosts: myai (RTX 3070+2060, Layer-Split,
 36,7 tok/s) als Basis und myubuntu (RTX 5080, Modell am Stück, 86,9 tok/s) als
-Burst. Der Router verteilt gewichtet und nimmt einen ausgefallenen Host
-innerhalb eines Requests aus der Rotation — myai schläft 23:00–06:00, myubuntu
-ist ein Desktop-Rechner und darf jederzeit weg sein. Für den Ingest heißt das:
+Burst. Der Router verteilt gewichtet — myai schläft 23:00–06:00, myubuntu ist
+ein Desktop-Rechner und darf jederzeit weg sein. Für den Ingest heißt das:
 läuft myubuntu mit, geht es rund dreimal so schnell; läuft es nicht, ist alles
 wie vorher. `ingest-begin.sh` weckt myai weiterhin vor jedem Ingest.
+
+**Ein toter Host bleibt in der Rotation.** Der Router *erkennt* ihn zwar
+(`/health?model=bge-m3` meldet ihn `unhealthy`), aber `background_health_checks`
+speist nur diesen Report — die Deployment-Auswahl filtert er nicht. Aus dem
+Routing fliegt ein Host allein über `allowed_fails`, und nach `cooldown_time`
+(120 s) steht er wieder drin, bei Gewicht 600:100 sofort wieder mit dem
+Großteil des Verkehrs. Gemessen 2026-08-31 bei gestopptem myubuntu: **jeder
+zehnte** Embedding-Call kam als HTTP 500 zurück. Für LightRAG reicht einer
+davon, um das ganze Dokument zu verwerfen — im Lauf davor 10 von 11.
+
+`_embed_post` (`server.py`) wiederholt deshalb dreimal, und zwar bei
+abgerissener Verbindung **und** bei einem Router-500 mit `Connection error` im
+Body bzw. 502/503/504. Nicht wiederholt werden `input ... is too large` (dafür
+gibt es den Halbierungs-Pfad) und echte Backend-Fehler wie CUDA OOM — die
+kommen beim zweiten Versuch genauso wieder.
 
 Der Router braucht `LLM_API_KEY` (Master-Key) — `server.py` schickt ihn im LLM-
 wie im Embedding-Pfad ohnehin schon mit.

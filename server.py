@@ -209,7 +209,29 @@ def _cap_embed_input(text: str) -> str:
 # Ein Wiederholversuch baut eine frische auf — die tote hat der Pool nach dem
 # Fehler bereits verworfen. AsyncHTTPTransport(retries=) hilft hier NICHT, das
 # deckt nur den Verbindungsaufbau ab, nicht den Abbruch nach dem Senden.
-_EMBED_CONN_ERRORS = (httpx.RemoteProtocolError, httpx.ConnectError, httpx.ReadError)
+class _UpstreamWeg(Exception):
+    """Der Router hat kein lebendes Backend erwischt. LiteLLM quittiert das mit
+    HTTP 500 und "Connection error" im Body (bzw. 502/503/504) — von aussen
+    nicht von einem echten Backend-Fehler zu unterscheiden, im Body aber schon.
+
+    Warum ueberhaupt: myubuntu ist Burst-Backend und darf jederzeit weg sein.
+    Der Health-Check des Routers merkt das zwar (/health meldet ihn unhealthy),
+    filtert die Deployment-Auswahl aber NICHT — nach jedem cooldown_time laeuft
+    wieder Verkehr auf den toten Host, bei Gewicht 600:100 der Grossteil. Am
+    31.08.2026 kostete das 10 von 11 Dokumenten in einem Ingest-Lauf.
+
+    Abgegrenzt von CUDA OOM und "too large": das sind echte Fehler des
+    Backends, ein Wiederholversuch waere dort nur teuer."""
+
+
+def _upstream_weg(r) -> bool:
+    if r.status_code in (502, 503, 504):
+        return True
+    return r.status_code == 500 and "connection error" in r.text.lower()
+
+
+_EMBED_CONN_ERRORS = (httpx.RemoteProtocolError, httpx.ConnectError, httpx.ReadError,
+                      _UpstreamWeg)
 
 
 async def _embed_post(payload):
@@ -220,7 +242,7 @@ async def _embed_post(payload):
         except _EMBED_CONN_ERRORS as e:
             if versuch == 2:
                 raise
-            log.warning("Embedding-Verbindung abgerissen (%s), Versuch %d/3: %s",
+            log.warning("Embedding-Fehlversuch (%s), Versuch %d/3: %s",
                         type(e).__name__, versuch + 2, e)
             await asyncio.sleep(0.5 * (versuch + 1))
 
@@ -241,6 +263,8 @@ async def _embed_post_einmal(payload):
                   "input": [t[: len(t) // 2] for t in payload]},
             headers={"Authorization": f"Bearer {LLM_API_KEY}"},
         )
+    if _upstream_weg(r):
+        raise _UpstreamWeg(f"HTTP {r.status_code}: {r.text[:160]}")
     r.raise_for_status()
     return [d["embedding"] for d in r.json()["data"]]
 
