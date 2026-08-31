@@ -235,6 +235,35 @@ def test_embed_func_gibt_nach_drei_versuchen_auf():
     assert len(client.sent) == 3, f"{len(client.sent)} Versuche statt 3"
 
 
+def _upstream_weg(status=500):
+    """So meldet LiteLLM ein weggefallenes Backend."""
+    return _Resp(status, text=("litellm.InternalServerError: InternalServerError: "
+                               "OpenAIException - Connection error.. Received "
+                               "Model Group=bge-m3"))
+
+
+def test_embed_func_wiederholt_bei_totem_backend_hinter_dem_router():
+    """myubuntu ist Burst-Backend und darf weg sein. Der Router schickt trotz
+    eigenem Health-Check weiter Verkehr dorthin und reicht den Ausfall als
+    HTTP 500 durch — ohne Wiederholung verliert das Dokument den ganzen Lauf."""
+    client = _Client([_upstream_weg(), _ok(1)])
+    server._embed_client = client
+    out = asyncio.run(server._embed_func(["abc"]))
+
+    assert len(client.sent) == 2, "kein Wiederholversuch nach Upstream-Ausfall"
+    assert out.shape == (1, server.EMBED_DIM), out.shape
+
+
+def test_embed_func_wiederholt_bei_gateway_fehler():
+    """502/503/504 kommen vom Router selbst, nie vom llama-server."""
+    client = _Client([_Resp(503, text="Service Unavailable"), _ok(1)])
+    server._embed_client = client
+    out = asyncio.run(server._embed_func(["abc"]))
+
+    assert len(client.sent) == 2, "kein Wiederholversuch bei 503"
+    assert out.shape == (1, server.EMBED_DIM), out.shape
+
+
 def test_embed_func_wiederholt_nicht_bei_serverfehler():
     """HTTP 500 ist kein Verbindungsproblem — hier greift nur der too-large-Pfad."""
     client = _Client([_Resp(500, text="CUDA out of memory")])
